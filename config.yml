@@ -1,0 +1,37 @@
+# compack configuration file.
+#
+# copy this file to your working directory as `config.yml` (or pass it
+# explicitly via `-config <path>`) to set defaults for every flag below.
+# any flag passed on the command line overrides the value set here.
+# keys may be omitted; omitted keys fall back to compack's built-in defaults.
+
+# top-level options
+out: pack.zip            # -out
+threads: 0               # -threads (0 = use runtime.NumCPU())
+quiet: false             # -q
+verbose: false           # -v
+dry_run: false           # -dry-run
+no_progress: false       # -no-progress
+
+# JSON / JSONC / .mcmeta minification
+json:
+  minify: true           # -json-minify / -skip-json
+
+# PNG optimization (oxipng lossless + optional pngquant lossy palette pass)
+png:
+  recompress: true              # -png-recompress / -skip-png
+  strip_meta: true              # -png-strip-meta
+  level: 0                      # -png-level (0 = preset 4, 1-6 presets, >6 = max)
+  keep_color_profile: false     # -png-keep-color-profile (keep gAMA/iCCP/cHRM/sRGB)
+  lossy_quant: true             # -png-lossy / -skip-png-quant (lossy pngquant pass)
+  quant_min: 65                 # -png-quant-min (0-100)
+  quant_max: 90                 # -png-quant-max (0-100)
+
+# OGG / Ogg Vorbis optimization (OptiVorbis, lossless)
+ogg:
+  optimize: true                # -ogg / -skip-ogg
+  strip_comments: true          # -ogg-strip-comments
+
+# shader / lang / properties minification
+text:
+  minify: true           # -text-minify / -skip-text

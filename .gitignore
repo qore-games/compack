@@ -1,0 +1,5 @@
+.env
+**.zip*
+main
+compack
+build/
