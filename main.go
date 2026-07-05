@@ -102,6 +102,7 @@ type yamlPNG struct {
 	LossyQuant    *bool `yaml:"lossy_quant"`
 	QuantMin      *int  `yaml:"quant_min"`
 	QuantMax      *int  `yaml:"quant_max"`
+	ProtectAlpha  *bool `yaml:"protect_alpha"`
 }
 
 type yamlOGG struct {
@@ -128,6 +129,7 @@ func defaultConfig() config {
 			PNGLossyQuant:    true,
 			PNGQuantMin:      65,
 			PNGQuantMax:      90,
+			PNGProtectAlpha:  true,
 			OGGOptimize:      true,
 			OGGStripComments: true,
 			TextMinify:       true,
@@ -173,6 +175,9 @@ func (cfg *config) applyYAML(y yamlConfig) {
 	}
 	if y.PNG.KeepColorProf != nil {
 		cfg.Options.PNGKeepColorMng = *y.PNG.KeepColorProf
+	}
+	if y.PNG.ProtectAlpha != nil {
+		cfg.Options.PNGProtectAlpha = *y.PNG.ProtectAlpha
 	}
 	if y.OGG.Optimize != nil {
 		cfg.OGGOptimize = *y.OGG.Optimize
@@ -306,6 +311,8 @@ func run(args []string) error {
 	fs.BoolVar(&skipPNGQuant, "skip-png-quant", false, "do not run the lossy pngquant palette step (alias for -png-lossy=false)")
 	fs.IntVar(&cfg.PNGQuantMin, "png-quant-min", cfg.PNGQuantMin, "pngquant --quality lower bound (0-100); below this quality the original pixels are kept")
 	fs.IntVar(&cfg.PNGQuantMax, "png-quant-max", cfg.PNGQuantMax, "pngquant --quality upper bound (0-100); trades palette size vs quality")
+
+	fs.BoolVar(&cfg.PNGProtectAlpha, "png-protect-alpha", cfg.PNGProtectAlpha, "skip the lossy pngquant pass for any RGBA PNG that actually uses its alpha channel (any non-fully-opaque pixel), preserving alpha values bit-for-bit; fully-opaque RGBA and RGB PNGs still get quantised")
 
 	fs.BoolVar(&cfg.OGGOptimize, "ogg", cfg.OGGOptimize, "losslessly shrink OGG/Ogg Vorbis via OptiVorbis (use -skip-ogg to disable)")
 	fs.BoolVar(&skipOGG, "skip-ogg", false, "do not optimize OGGs (alias for -ogg=false)")

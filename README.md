@@ -18,7 +18,7 @@ relies on OptiVorbis for OGG, oxipng for lossless PNG, and pngquant
 > | ---------- | ----------- | ----------- |
 > | Original   | 95.0 MB     |  |
 > | PackSquash | ~68.4 MB    | ~124 seconds |
-> | compack    | ~66.7 MB (with extra files and overlays) | ~22 seconds |
+> | compack    | ~67.6 MB (with extra files and overlays) | ~19 seconds |
 
 The difference is philosophy: compack never refuses a file or an unconventional
 layout. Pack overlays, extra files and atypical directory structures are passed
@@ -162,6 +162,7 @@ text:
 | `-png-lossy` / `-skip-png-quant`  | on              | Lossily remap RGB/RGBA PNGs to an 8-bit palette via embedded pngquant (libimagequant) **before** the lossless oxipng pass; this is the step that reaches PackSquash-level sizes on photographic textures but is **not** pixel-identical |
 | `-png-quant-min`                  | 65              | pngquant `--quality` lower bound (0-100); if the achievable quality would drop below this, the original pixels are kept |
 | `-png-quant-max`                  | 90              | pngquant `--quality` upper bound (0-100); higher means more colors retained, larger palette |
+| `-png-protect-alpha`              | on              | Skip the lossy pngquant pass for RGBA PNGs carrying meaningful alpha (any pixel with `0 < alpha < 255`), preserving alpha values bit-for-bit; hard-edged cutouts (alpha=0 + alpha=255 only) and plain RGB PNGs still get quantised |
 | `-png-strip-meta`                 | on              | Tell oxipng to drop ancillary PNG chunks (metadata removal) |
 | `-png-level`                      | 0 (= preset 4) | oxipng optimization preset (1-6, 0 = default 4, >6 = `max`) |
 | `-png-keep-color-profile`         | off             | Keep `gAMA` / `iCCP` / `cHRM` / `sRGB` / `pHYs` / etc. chunks |

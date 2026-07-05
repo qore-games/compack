@@ -26,6 +26,7 @@ png:
   lossy_quant: true             # -png-lossy / -skip-png-quant (lossy pngquant pass)
   quant_min: 65                 # -png-quant-min (0-100)
   quant_max: 90                 # -png-quant-max (0-100)
+  protect_alpha: true           # -png-protect-alpha
 
 # OGG / Ogg Vorbis optimization (OptiVorbis, lossless)
 ogg:

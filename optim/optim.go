@@ -34,6 +34,22 @@ type Options struct {
 	PNGQuantMin   int // 0-100, lower bound for --quality (pngquant exit 99 = pass-through).
 	PNGQuantMax   int // 0-100, upper bound for --quality.
 
+	// PNGProtectAlpha pre-scans RGBA (color-type 6) PNGs for pixels with a
+	// meaningful alpha value (0 < alpha < 255). When set, textures that
+	// actually encode semantic data in their alpha channel (e.g. Minecraft
+	// trim/leather tint keys, glass, ice, leaves) skip the lossy pngquant
+	// pass and fall through to the lossless oxipng stage, preserving every
+	// alpha value bit-for-bit — the palette quantiser would otherwise round
+	// alpha towards the nearest palette entry, collapsing thin markers to
+	// fully transparent and shifting mid-range alphas.
+	//
+	// Hard-edged cutouts (alpha == 0 or 255 only — e.g. an icon with a
+	// transparent background and an opaque subject) are NOT matched: those
+	// endpoints are palette endpoints pngquant preserves losslessly, and
+	// alpha=0 carries no semantic data. Plain RGB images (color-type 2)
+	// carry no alpha channel at all and always go through the lossy pass.
+	PNGProtectAlpha bool
+
 	// OGG is optimized via the embedded OptiVorbis binary. OptiVorbis is a
 	// fully lossless optimizer: it shrinks the Ogg container and strips
 	// metadata without touching the decoded audio samples. OGGOptimize gates

@@ -6,6 +6,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"hash/crc32"
+	"image/png"
 	"io"
 	"os/exec"
 	"strconv"
@@ -185,6 +186,17 @@ func quantizePNG(data []byte, opts Options) (out []byte, note string, ok bool, e
 		return data, "", false, nil
 	}
 
+	// Alpha-channel guard. Skipped for non-RGBA color types: only color-type
+	// 6 (RGBA) carries an alpha channel that pngquant could mangle, and
+	// pre-scanning type 2 (RGB) wastes a decode. Fully-opaque RGBA images
+	// (every alpha == 255) are NOT matched here, so they keep benefiting
+	// from the lossy palette pass.
+	if colorType == 6 && opts.PNGProtectAlpha {
+		if uses, _ := usesAlphaChannel(data); uses {
+			return data, "alpha preserved (skip pngquant)", false, nil
+		}
+	}
+
 	bin, err := extractBin("pngquant")
 	if err != nil {
 		return data, "", false, err
@@ -310,4 +322,38 @@ func readU32(r io.Reader) (uint32, error) {
 		return 0, err
 	}
 	return binary.BigEndian.Uint32(b[:]), nil
+}
+
+// usesAlphaChannel reports whether the source PNG carries any pixel with a
+// meaningful alpha value (one that is neither fully transparent nor fully
+// opaque). Such a texture encodes semantic data in its alpha channel (e.g.
+// Minecraft trim/leather tint keys, glass, ice, leaves, particle fades) that
+// the libimagequant palette pass would round towards the nearest palette
+// entry — destroying thin markers entirely and shifting mid-range alphas.
+// When this returns true the caller skips pngquant so the image falls through
+// to the lossless oxipng stage and every alpha value is preserved bit-for-bit.
+//
+// Fully-transparent (alpha == 0) and fully-opaque (alpha == 255) pixels are
+// NOT considered "alpha data": alpha=0 carries no semantic information (it's
+// just a hole) and alpha=255 means fully visible, both being palette
+// endpoints that pngquant preserves losslessly. So a typical hard-edged
+// cutout (e.g. an icon with a transparent background and an opaque subject)
+// still gets to benefit from the lossy palette pass. On any decode error
+// it returns (false, nil) so pngquant still gets a chance to decide what
+// to do with the file.
+func usesAlphaChannel(data []byte) (bool, error) {
+	img, err := png.Decode(bytes.NewReader(data))
+	if err != nil {
+		return false, nil
+	}
+	b := img.Bounds()
+	for y := b.Min.Y; y < b.Max.Y; y++ {
+		for x := b.Min.X; x < b.Max.X; x++ {
+			_, _, _, a := img.At(x, y).RGBA()
+			if a != 0 && a != 0xffff {
+				return true, nil
+			}
+		}
+	}
+	return false, nil
 }
