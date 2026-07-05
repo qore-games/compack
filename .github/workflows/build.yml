@@ -18,19 +18,19 @@ jobs:
         include:
           - goos: linux
             goarch: amd64
-            runner: ubuntu-latest
+            runner: ubuntu-26.04
           - goos: linux
             goarch: arm64
-            runner: ubuntu-latest
+            runner: ubuntu-26.04-arm
           - goos: darwin
             goarch: amd64
-            runner: macos-13
+            runner: macos-26-intel
           - goos: darwin
             goarch: arm64
-            runner: macos-latest
+            runner: macos-26
           - goos: windows
             goarch: amd64
-            runner: windows-latest
+            runner: windows-2025
     env:
       GOOS: ${{ matrix.goos }}
       GOARCH: ${{ matrix.goarch }}
