@@ -95,6 +95,10 @@ oxipng / OptiVorbis / pngquant binaries already checked into `optim/bin/` match
 the current platform; otherwise the existing files are fine. No external
 binaries are looked up on `$PATH` at runtime.
 
+## Online API
+ 
+No install required: compack is also available as a hosted API at
+[mineassets.com/tools/compack](https://mineassets.com/tools/compack).
 ## Usage
 
 ```
