@@ -3,7 +3,7 @@
     .name = "compack",
     .display_name = "Compack",
     .description = "A small desktop front-end for compack — a fast Minecraft resource/data pack optimizer.",
-    .version = "1.0.1",
+    .version = "1.0.2",
     .icons = .{"assets/icon.png"},
     .platforms = .{ "macos", "linux", "windows" },
     .permissions = .{ "view", "command" },

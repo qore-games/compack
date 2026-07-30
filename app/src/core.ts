@@ -22,7 +22,7 @@ const TEXT_CAP = 4096;
 // The app's own version — kept in sync with app.zon `.version` and with the
 // GitHub release tags. The update banner compares this against the latest
 // release `tag_name`.
-const CURRENT_VERSION = asciiBytes("1.0.1");
+const CURRENT_VERSION = asciiBytes("1.0.2");
 
 const SHELL_MERGE = asciiBytes('exec "$0" "$@" 2>&1');
 
