@@ -174,7 +174,7 @@ jobs:
           chmod +x compack.AppDir/AppRun
 
           # Copy icon and desktop file to root of AppDir (required by AppImage)
-          cp app/assets/icon.png compack.AppDir/compack.png 2>/dev/null || true
+          cp app/assets/icon.png compack.AppDir/app-icon.png 2>/dev/null || true
           cp compack-appimage/share/applications/*.desktop compack.AppDir/ 2>/dev/null || true
 
           # Build the AppImage
