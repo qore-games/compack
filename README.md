@@ -6,11 +6,11 @@ A fast, dependency-light Go alternative to [PackSquash](https://github.com/Comun
 for trimming and compacting Minecraft: Java Edition resource and data packs.
 
 **Compression is equal or better than PackSquash on text files (JSON, shaders,
-lang, properties), and on par on PNGs and OGGs.** `compack` walks an input
-pack directory and writes a single ready-to-use ZIP file with each recognized
-file type optimized in parallel, using the same upstream engines PackSquash
-relies on OptiVorbis for OGG, oxipng for lossless PNG, and pngquant
-(libimagequant) for the optional lossy palette step.
+lang, properties), and on par on PNGs and OGGs.** `compack` walks an input pack
+(an unpacked directory **or** a `.zip` archive) and writes a single ready-to-use
+ZIP file with each recognized file type optimized in parallel, using the same
+upstream engines PackSquash relies on OptiVorbis for OGG, oxipng for lossless
+PNG, and pngquant (libimagequant) for the optional lossy palette step.
 
 > **Real-world example: [Minebox](https://minebox.co/) resource pack**
 >
@@ -95,20 +95,39 @@ oxipng / OptiVorbis / pngquant binaries already checked into `optim/bin/` match
 the current platform; otherwise the existing files are fine. No external
 binaries are looked up on `$PATH` at runtime.
 
-## Online API
+## Online App
  
 No install required: compack is also available as a hosted API at
 [mineassets.com/tools/compack](https://mineassets.com/tools/compack).
+
+### Desktop app
+
+`app/` is a small native desktop front-end for the `compack` CLI,
+built with the [Native SDK](https://native-sdk.dev) (`vercel-labs/native`).
+It is one narrow window: pick a resource pack (folder or `.zip`) + an output
+folder  and press **Pack**. compack writes a
+single `<input name>-compack.zip` into the chosen folder.
+
+```sh
+cd app
+./dev.sh      # build Go binary + run in dev mode (markup hot reload)
+./build.sh build    # build Go binary + ReleaseFast binary in zig-out/bin/
+```
+
+See [`app/README.md`](app/README.md) for details.
+
 ## Usage
 
 ```
-compack [-flags...] <input-dir> [-out output.zip] [-config config.yml]
+compack [-flags...] <input> [-out output.zip] [-config config.yml]
 ```
 
-Flags and positional arguments may appear in any order. Common examples:
+`<input>` is either a resource/data pack directory or a `.zip` archive. Flags
+and positional arguments may appear in any order. Common examples:
 
 ```
 compack ./my-resourcepack -out pack.zip
+compack ./my-resourcepack.zip -out pack.zip        # optimize straight from a .zip input
 compack -png-strip-meta -ogg -json-minify ./my-pack
 compack -skip-png-quant ./my-pack                  # disable the lossy palette step (lossless-only)
 compack -skip-png -skip-ogg -skip-text ./my-pack   # pass-through (just ZIP everything)

@@ -1,5 +1,5 @@
 .env
 **.zip*
-main
-compack
+/main
+/compack
 build/

@@ -1,0 +1,135 @@
+<!-- compack desktop UI: a small, narrow, straight-to-the-point wrapper
+     around the `compack` CLI. Binds the core model in src/core.ts. -->
+<scroll grow="1">
+<column gap="16" padding="20">
+
+  <!-- header -->
+  <row gap="10" cross="center">
+    <text size="heading">compack</text>
+    <spacer grow="1"/>
+    <text foreground="text_muted" size="sm">v{currentVersionText}</text>
+    <button size="sm" variant="ghost" on-press="open_github">GitHub</button>
+    <badge>{platformLabel}</badge>
+  </row>
+
+  <!-- update banner -->
+  <if test="{updateBannerVisible}">
+    <card padding="12">
+      <row gap="10" cross="center">
+        <icon name="download"/>
+        <text grow="1" wrap="true">Update available: {latestVersionText}</text>
+        <button size="sm" variant="outline" on-press="copy_update_link">Copy link</button>
+        <button size="sm" variant="ghost" on-press="dismiss_update">Dismiss</button>
+      </row>
+    </card>
+  </if>
+  <else>
+    <if test="{updatePending}">
+      <row gap="8" cross="center" padding="4">
+        <spinner/>
+        <text foreground="text_muted">Checking for updates...</text>
+      </row>
+    </if>
+  </else>
+
+  <!-- input folder or .zip -->
+  <card padding="16">
+    <column gap="12">
+      <text size="lg">Input</text>
+      <column gap="8">
+        <text foreground="text_muted">Resource pack (folder or .zip)</text>
+        <text-field grow="1" text="{inputEditor.text}" on-input="edit_input" placeholder="Path to the pack folder or .zip..." label="Resource pack folder or .zip"/>
+        <row gap="8">
+          <button grow="1" size="sm" variant="secondary" disabled="{isPacking}" on-press="browse_input_folder">Browse folder</button>
+          <button grow="1" size="sm" variant="secondary" disabled="{isPacking}" on-press="browse_input_file">Browse .zip</button>
+        </row>
+      </column>
+    </column>
+  </card>
+
+  <!-- output folder (compack writes <input name>-compack.zip into it) -->
+  <card padding="16">
+    <column gap="12">
+      <text size="lg">Output</text>
+      <column gap="8">
+        <text foreground="text_muted">Output folder</text>
+        <text-field grow="1" text="{outputEditor.text}" on-input="edit_output" placeholder="Folder to drop the .zip into..." label="Output folder"/>
+        <button size="sm" variant="secondary" disabled="{isPacking}" on-press="browse_output">Browse</button>
+      </column>
+    </column>
+  </card>
+
+  <!-- optimization settings (collapsible) -->
+  <if test="{optimizationOpen}">
+    <card padding="16">
+      <column gap="12">
+        <row gap="8" cross="center">
+          <text size="lg" grow="1">Optimization</text>
+          <button size="sm" variant="ghost" on-press="toggle_optimization">Hide</button>
+        </row>
+        <column gap="10">
+          <row gap="10">
+            <switch grow="1" checked="{pngLossy}" on-toggle="toggle_png_lossy">PNG lossy palette</switch>
+            <switch grow="1" checked="{pngRecompress}" on-toggle="toggle_png_recompress">PNG recompress</switch>
+          </row>
+          <row gap="10">
+            <switch grow="1" checked="{pngStripMeta}" on-toggle="toggle_png_strip">Strip PNG metadata</switch>
+            <switch grow="1" checked="{pngProtectAlpha}" on-toggle="toggle_png_protect_alpha">Protect alpha</switch>
+          </row>
+          <row gap="10">
+            <switch grow="1" checked="{ogg}" on-toggle="toggle_ogg">Optimize OGG</switch>
+            <switch grow="1" checked="{oggStripComments}" on-toggle="toggle_ogg_strip">Strip OGG comments</switch>
+          </row>
+          <row gap="10">
+            <switch grow="1" checked="{jsonMinify}" on-toggle="toggle_json">Minify JSON</switch>
+            <switch grow="1" checked="{textMinify}" on-toggle="toggle_text">Minify text/shaders</switch>
+          </row>
+        </column>
+      </column>
+    </card>
+  </if>
+  <else>
+    <row gap="8" cross="center" padding="8">
+      <text size="lg" grow="1">Optimization</text>
+      <button size="sm" variant="ghost" on-press="toggle_optimization">Show</button>
+    </row>
+  </else>
+
+  <!-- run / result -->
+  <column gap="12">
+    <if test="{isPacking}">
+      <button variant="destructive" on-press="cancel_pack">{packButtonText}</button>
+    </if>
+    <else>
+      <button variant="primary" disabled="{not canPackNow}" on-press="pack">{packButtonText}</button>
+    </else>
+
+    <if test="{isPacking}">
+      <column gap="6">
+        <row gap="8" cross="center">
+          <spinner/>
+          <text grow="1" wrap="true" foreground="text_muted">{progressText}</text>
+        </row>
+        <if test="{filesProcessed > 0}">
+          <text size="sm" foreground="text_muted">{filesProcessedText}</text>
+        </if>
+      </column>
+    </if>
+
+    <if test="{hadResult}">
+      <column gap="6">
+        <row gap="8" cross="start" padding="10" background="surface" radius="lg">
+          <text>{statusText}</text>
+          <text grow="1" wrap="true">{resultText}</text>
+        </row>
+        <if test="{outputSize > 0}">
+          <text size="sm" foreground="text_muted">Output size: {outputSizeText}</text>
+        </if>
+      </column>
+    </if>
+  </column>
+
+  <text foreground="text_muted" size="sm" wrap="true">For fine-tuning (PNG level, quant range, OGG) use config.yml or the compack CLI.</text>
+  <spacer height="20"/>
+</column>
+</scroll>

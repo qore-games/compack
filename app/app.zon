@@ -1,0 +1,38 @@
+.{
+    .id = "dev.qore.compack",
+    .name = "compack",
+    .display_name = "Compack",
+    .description = "A small desktop front-end for compack — a fast Minecraft resource/data pack optimizer.",
+    .version = "1.0.1",
+    .icons = .{"assets/icon.png"},
+    .platforms = .{ "macos", "linux", "windows" },
+    .permissions = .{ "view", "command" },
+    .capabilities = .{ "native_views", "gpu_surfaces" },
+    .theme = "geist",
+    .shell = .{
+        .windows = .{
+            .{
+                .label = "main",
+                .title = "Compack",
+                .width = 420,
+                .height = 680,
+                .min_width = 380,
+                .min_height = 560,
+                .resizable = true,
+                .restore_state = false,
+                .restore_policy = "center_on_primary",
+                .close_policy = "quit",
+                .views = .{
+                    .{ .label = "main-canvas", .kind = "gpu_surface", .fill = true, .role = "Compack window", .accessibility_label = "Compack", .gpu_backend = "metal", .gpu_pixel_format = "bgra8_unorm", .gpu_present_mode = "timer", .gpu_alpha_mode = "opaque", .gpu_color_space = "srgb", .gpu_vsync = true },
+                },
+            },
+        },
+    },
+    .security = .{
+        .navigation = .{
+            .allowed_origins = .{ "zero://app", "zero://inline" },
+            .external_links = .{ .action = "deny" },
+        },
+    },
+    .web_engine = "system",
+}

@@ -1,0 +1,182 @@
+name: Desktop app
+
+on:
+  push:
+    branches: [main, master]
+    tags: ['v*']
+  pull_request:
+    branches: [main, master]
+  workflow_dispatch:
+
+jobs:
+  build:
+    name: Native app — ${{ matrix.target }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: macos
+            os: macos
+            runner: macos-14
+            goos: darwin
+            goarch: arm64
+            binary: compack
+          - target: linux
+            os: linux
+            runner: ubuntu-22.04
+            goos: linux
+            goarch: amd64
+            binary: compack
+          - target: windows
+            os: windows
+            runner: windows-latest
+            goos: windows
+            goarch: amd64
+            binary: compack.exe
+    defaults:
+      run:
+        working-directory: app
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22.15'
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.23'
+
+      - name: Install Native SDK CLI
+        run: npm install -g @native-sdk/cli@0.6.0
+
+      - name: Install GTK development headers (Linux)
+        if: matrix.target == 'linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libgtk-3-dev libglib2.0-dev libsoup-3.0-dev libxml2-dev
+
+      - name: Build compack binary
+        shell: bash
+        working-directory: .
+        run: |
+          mkdir -p app/assets
+          GOOS=${{ matrix.goos }} GOARCH=${{ matrix.goarch }} go build -o app/assets/${{ matrix.binary }} .
+          chmod +x app/assets/${{ matrix.binary }}
+
+      - name: Check the app
+        run: native check
+
+      - name: Build the app
+        run: native build
+
+      - name: Package the app
+        id: pkg
+        run: native package --target ${{ matrix.target }} --output ../compack-desktop --archive
+
+      - name: Locate the archive
+        id: archive
+        shell: bash
+        working-directory: .
+        run: |
+          f=$(ls compack-*ReleaseFast.tar.gz compack-*ReleaseFast.zip 2>/dev/null | head -1 || true)
+          if [ -z "$f" ]; then f=$(ls app-*ReleaseFast.tar.gz app-*ReleaseFast.zip 2>/dev/null | head -1 || true); fi
+          if [ -z "$f" ]; then echo "no archive found"; find . -name 'compack-*ReleaseFast.*' | head; exit 1; fi
+          echo "path=$f" >> "$GITHUB_OUTPUT"
+          echo "name=$(basename "$f")" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: compack-desktop-${{ matrix.target }}
+          path: ${{ steps.archive.outputs.path }}
+          if-no-files-found: error
+
+  appimage:
+    name: AppImage — linux
+    runs-on: ubuntu-22.04
+    needs: build
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22.15'
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.23'
+
+      - name: Install Native SDK CLI
+        run: npm install -g @native-sdk/cli@0.6.0
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libgtk-3-dev libglib2.0-dev libsoup-3.0-dev libxml2-dev
+
+      - name: Build compack binary
+        run: |
+          mkdir -p app/assets
+          GOOS=linux GOARCH=amd64 go build -o app/assets/compack .
+          chmod +x app/assets/compack
+
+      - name: Build the app
+        working-directory: app
+        run: native build
+
+      - name: Package for Linux
+        working-directory: app
+        run: native package --target linux --output ../compack-appimage
+
+      - name: Create AppImage
+        run: |
+          # Download appimagetool
+          wget -q https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-x86_64.appimage
+          chmod +x appimagetool-x86_64.appimage
+
+          # Create AppDir structure
+          mkdir -p compack.AppDir/usr/bin
+          mkdir -p compack.AppDir/usr/share/applications
+          mkdir -p compack.AppDir/usr/share/icons/hicolor/512x512/apps
+
+          # Copy the packaged files
+          cp -r compack-appimage/bin/* compack.AppDir/usr/bin/
+          cp -r compack-appimage/share/applications/* compack.AppDir/usr/share/applications/ 2>/dev/null || true
+          cp -r compack-appimage/share/icons/hicolor/*/apps/* compack.AppDir/usr/share/icons/hicolor/512x512/apps/ 2>/dev/null || true
+
+          # Create AppRun
+          printf '#!/bin/bash\nHERE="$(dirname "$(readlink -f "$0")")"\nexec "$HERE/usr/bin/compack" "$@"\n' > compack.AppDir/AppRun
+          chmod +x compack.AppDir/AppRun
+
+          # Copy icon and desktop file to root of AppDir (required by AppImage)
+          cp app/assets/icon.png compack.AppDir/compack.png 2>/dev/null || true
+          cp compack-appimage/share/applications/*.desktop compack.AppDir/ 2>/dev/null || true
+
+          # Build the AppImage
+          ./appimagetool-x86_64.appimage compack.AppDir compack-x86_64.AppImage
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: compack-desktop-appimage
+          path: compack-x86_64.AppImage
+          if-no-files-found: error
+
+  release:
+    name: Attach to release
+    needs: [build, appimage]
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            artifacts/compack-*
+          generate_release_notes: true
