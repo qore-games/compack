@@ -77,6 +77,7 @@ jobs:
 
       - name: Package the app
         id: pkg
+        shell: bash
         run: |
           if [ "${{ matrix.target }}" = "windows" ]; then
             native package --target ${{ matrix.target }} --output ../compack-desktop
