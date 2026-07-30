@@ -102,6 +102,8 @@ No install required: compack is also available as a hosted API at
 
 ## Desktop app
 
+<img src="docs/desktop-app.png" width="250">   
+
 `app/` is a small native desktop front-end for the `compack` CLI,
 built with the [Native SDK](https://native-sdk.dev) (`vercel-labs/native`).
 It is one narrow window: pick a resource pack (folder or `.zip`) + an output
