@@ -79,11 +79,11 @@ jobs:
         shell: bash
         run: |
           if [ "${{ matrix.target }}" = "windows" ]; then
-            # Windows: skip native package (has StreamTooLong issue), just zip the binary
+            # Windows: skip native package (has StreamTooLong issue), use PowerShell to zip
             mkdir -p compack-desktop
             cp zig-out/bin/compack.exe compack-desktop/
             cp assets/icon.png compack-desktop/ 2>/dev/null || true
-            zip -r compack-windows.zip compack-desktop/
+            powershell -Command "Compress-Archive -Path compack-desktop -DestinationPath compack-windows.zip -Force"
           else
             native package --target ${{ matrix.target }} --output ../compack-desktop --archive
           fi
