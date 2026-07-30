@@ -27,6 +27,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"io/fs"
 	"log"
 	"os"
@@ -49,10 +50,13 @@ var version = "dev"
 const usage = `compack - fast Minecraft resource/data pack optimizer
 
 Usage:
-  compack [-flags...] <input-dir> [-out output.zip] [-config config.yml]
+  compack [-flags...] <input> [-out output.zip] [-config config.yml]
+
+  <input> is either a resource/data pack directory or a .zip archive.
 
 Examples:
   compack ./my-resourcepack -out pack.zip
+  compack ./my-resourcepack.zip -out pack.zip
   compack -png-strip-meta -ogg -json-minify ./my-pack
   compack -skip-png -skip-ogg -json-minify ./my-pack        # only minify text/json
   compack -config my-config.yml ./my-pack                  # use settings from config file
@@ -62,7 +66,9 @@ Flags:`
 // config mirrors every user-facing setting. It is populated from (in order):
 // defaults -> config.yml (if found / specified) -> explicit command-line flags.
 type config struct {
-	inDir      string
+	// inPath is the input resource/data pack: either a directory or a .zip
+	// archive.
+	inPath     string
 	outZip     string
 	threads    int
 	quiet      bool
@@ -351,9 +357,9 @@ func run(args []string) error {
 
 	if fs.NArg() < 1 {
 		fs.Usage()
-		return errors.New("missing input directory")
+		return errors.New("missing input path (directory or .zip)")
 	}
-	cfg.inDir = fs.Arg(0)
+	cfg.inPath = fs.Arg(0)
 	if cfg.threads < 1 {
 		cfg.threads = 1
 	}
@@ -362,9 +368,11 @@ func run(args []string) error {
 
 // fileSpec is one discovered resource pack file.
 type fileSpec struct {
-	rel  string // forward-slash relative path within the input directory
-	abs  string
+	rel  string // forward-slash relative path within the input directory / archive
 	size int64
+	// read returns the raw file bytes. For a directory input this reads from
+	// the filesystem; for a .zip input it reads from the archive entry.
+	read func() ([]byte, error)
 }
 
 // buildResult is the optimized form of one input file produced by the worker
@@ -382,20 +390,29 @@ type buildResult struct {
 
 func build(cfg config) error {
 	start := time.Now()
-	info, err := os.Stat(cfg.inDir)
+	info, err := os.Stat(cfg.inPath)
 	if err != nil {
-		return fmt.Errorf("stat input dir: %w", err)
-	}
-	if !info.IsDir() {
-		return fmt.Errorf("input path %q is not a directory", cfg.inDir)
+		return fmt.Errorf("stat input: %w", err)
 	}
 
-	files, err := discover(cfg.inDir)
-	if err != nil {
-		return fmt.Errorf("walk input dir: %w", err)
+	var files []fileSpec
+	if info.IsDir() {
+		files, err = discover(cfg.inPath)
+		if err != nil {
+			return fmt.Errorf("walk input dir: %w", err)
+		}
+	} else if strings.EqualFold(filepath.Ext(cfg.inPath), ".zip") {
+		zr, zerr := zip.OpenReader(cfg.inPath)
+		if zerr != nil {
+			return fmt.Errorf("open input zip %q: %w", cfg.inPath, zerr)
+		}
+		defer zr.Close()
+		files = discoverZipEntries(zr.File)
+	} else {
+		return fmt.Errorf("input path %q is neither a directory nor a .zip file", cfg.inPath)
 	}
 	if len(files) == 0 {
-		return fmt.Errorf("no files found under %q", cfg.inDir)
+		return fmt.Errorf("no files found under %q", cfg.inPath)
 	}
 
 	// Live progress bar drawn on stderr while files are optimized. Auto-detects
@@ -435,7 +452,7 @@ func build(cfg config) error {
 		go func() {
 			defer wg.Done()
 			for f := range jobs {
-				data, err := os.ReadFile(f.abs)
+				data, err := f.read()
 				if err != nil {
 					resultsCh <- rresult{buildResult: buildResult{rel: f.rel, orig: f.size}, err: err}
 					continue
@@ -598,7 +615,10 @@ func discover(root string) ([]fileSpec, error) {
 		if err != nil {
 			return err
 		}
-		out = append(out, fileSpec{rel: rel, abs: path, size: info.Size()})
+		abs := path
+		out = append(out, fileSpec{rel: rel, size: info.Size(), read: func() ([]byte, error) {
+			return os.ReadFile(abs)
+		}})
 		return nil
 	})
 	if err != nil {
@@ -608,7 +628,41 @@ func discover(root string) ([]fileSpec, error) {
 	return out, nil
 }
 
-// reorderArgs moves every non-flag token (and its standalone value when it
+// discoverZipEntries turns a ZIP archive's entries into fileSpecs. The file
+// bytes are read lazily through the archive: Go's archive/zip reader shares a
+// single backing file handle across entries, so concurrent Open calls would
+// interleave seeks and corrupt reads. A mutex serializes the Open+ReadAll
+// calls (the heavy optimization work still runs concurrently afterwards).
+// Directory entries and non-regular files are skipped; leading "./" prefixes
+// are stripped so rel paths match what discover would produce for a folder.
+func discoverZipEntries(entries []*zip.File) []fileSpec {
+	var mu sync.Mutex
+	out := make([]fileSpec, 0, len(entries))
+	for _, f := range entries {
+		fi := f.FileInfo()
+		if fi.IsDir() || !fi.Mode().IsRegular() {
+			continue
+		}
+		name := strings.TrimPrefix(filepath.ToSlash(f.Name), "./")
+		entry := f
+		out = append(out, fileSpec{
+			rel:  name,
+			size: int64(f.UncompressedSize64),
+			read: func() ([]byte, error) {
+				mu.Lock()
+				defer mu.Unlock()
+				rc, err := entry.Open()
+				if err != nil {
+					return nil, err
+				}
+				defer rc.Close()
+				return io.ReadAll(rc)
+			},
+		})
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].rel < out[j].rel })
+	return out
+}
 // looks like a positional rather than a flag value) to the end of the slice
 // so that the stdlib flag package, which stops at the first non-flag, can
 // still parse everything. We are conservative: a token is treated as a flag
