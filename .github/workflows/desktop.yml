@@ -165,14 +165,15 @@ jobs:
           mkdir -p compack.AppDir/usr/bin
           mkdir -p compack.AppDir/usr/share/applications
           mkdir -p compack.AppDir/usr/share/icons/hicolor/512x512/apps
+          mkdir -p compack.AppDir/assets
 
           # Copy the built binary
           cp zig-out/bin/compack compack.AppDir/usr/bin/
           chmod +x compack.AppDir/usr/bin/compack
 
-          # Copy the compack CLI binary into the AppImage
-          cp assets/compack compack.AppDir/usr/bin/compack-cli
-          chmod +x compack.AppDir/usr/bin/compack-cli
+          # Copy the compack CLI binary into the AppImage (app expects it at assets/compack)
+          cp assets/compack compack.AppDir/assets/compack
+          chmod +x compack.AppDir/assets/compack
 
           # Create desktop file
           cat > compack.AppDir/compack.desktop << 'EOF'
@@ -188,8 +189,8 @@ jobs:
           # Copy icon to root of AppDir
           cp assets/icon.png compack.AppDir/app-icon.png 2>/dev/null || true
 
-          # Create AppRun
-          printf '#!/bin/bash\nHERE="$(dirname "$(readlink -f "$0")")"\nexec "$HERE/usr/bin/compack" "$@"\n' > compack.AppDir/AppRun
+          # Create AppRun (cd to AppDir so relative path assets/compack resolves)
+          printf '#!/bin/bash\nHERE="$(dirname "$(readlink -f "$0")")"\ncd "$HERE"\nexec "$HERE/usr/bin/compack" "$@"\n' > compack.AppDir/AppRun
           chmod +x compack.AppDir/AppRun
 
           # Build the AppImage
