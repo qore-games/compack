@@ -48,6 +48,10 @@ jobs:
         with:
           go-version: '1.23'
 
+      - uses: goto-bus-stop/setup-zig@v2
+        with:
+          version: 0.16.0
+
       - name: Install Native SDK CLI
         run: npm install -g @native-sdk/cli@0.6.0
 
@@ -106,6 +110,10 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version: '1.23'
+
+      - uses: goto-bus-stop/setup-zig@v2
+        with:
+          version: 0.16.0
 
       - name: Install Native SDK CLI
         run: npm install -g @native-sdk/cli@0.6.0

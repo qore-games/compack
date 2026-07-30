@@ -100,7 +100,7 @@ binaries are looked up on `$PATH` at runtime.
 No install required: compack is also available as a hosted API at
 [mineassets.com/tools/compack](https://mineassets.com/tools/compack).
 
-### Desktop app
+## Desktop app
 
 `app/` is a small native desktop front-end for the `compack` CLI,
 built with the [Native SDK](https://native-sdk.dev) (`vercel-labs/native`).
