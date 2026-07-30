@@ -3,3 +3,6 @@ zig-out/
 .zig-cache/
 node_modules/
 assets/compack*
+compack.AppDir/
+*.appimage
+*.AppImage

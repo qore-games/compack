@@ -82,8 +82,9 @@ jobs:
             # Windows: skip native package (has StreamTooLong issue), use PowerShell to zip
             mkdir -p compack-desktop
             cp zig-out/bin/compack.exe compack-desktop/
+            cp assets/compack.exe compack-desktop/ 2>/dev/null || true
             cp assets/icon.png compack-desktop/ 2>/dev/null || true
-            powershell -Command "Compress-Archive -Path compack-desktop -DestinationPath compack-windows.zip -Force"
+            powershell -Command "Compress-Archive -Path compack-desktop -DestinationPath compack-desktop-windows.zip -Force"
           else
             native package --target ${{ matrix.target }} --output ../compack-desktop --archive
           fi
@@ -95,20 +96,23 @@ jobs:
         run: |
           if [ "${{ matrix.target }}" = "windows" ]; then
             # Windows: use the manually created zip
-            echo "path=app/compack-windows.zip" >> "$GITHUB_OUTPUT"
-            echo "name=compack-windows.zip" >> "$GITHUB_OUTPUT"
+            echo "path=app/compack-desktop-windows.zip" >> "$GITHUB_OUTPUT"
+            echo "name=compack-desktop-windows.zip" >> "$GITHUB_OUTPUT"
           else
-            # macOS/Linux: find the archive created by native package --archive
+            # macOS/Linux: find the archive created by native package --archive and rename it
             f=$(ls compack-*ReleaseFast.tar.gz compack-*ReleaseFast.zip compack-*ReleaseFast.dmg 2>/dev/null | head -1 || true)
             if [ -z "$f" ]; then f=$(ls app-*ReleaseFast.tar.gz app-*ReleaseFast.zip app-*ReleaseFast.dmg 2>/dev/null | head -1 || true); fi
             if [ -z "$f" ]; then echo "no archive found"; find . -name 'compack-*ReleaseFast.*' | head; exit 1; fi
-            echo "path=$f" >> "$GITHUB_OUTPUT"
-            echo "name=$(basename "$f")" >> "$GITHUB_OUTPUT"
+            # Rename to include desktop suffix
+            newname=$(echo "$f" | sed 's/ReleaseFast//')
+            mv "$f" "$newname"
+            echo "path=$newname" >> "$GITHUB_OUTPUT"
+            echo "name=$(basename "$newname")" >> "$GITHUB_OUTPUT"
           fi
 
       - uses: actions/upload-artifact@v4
         with:
-          name: compack-desktop-${{ matrix.target }}
+          name: compack-desktop-${{ matrix.target }}-archive
           path: ${{ steps.archive.outputs.path }}
           if-no-files-found: error
 
@@ -149,41 +153,52 @@ jobs:
         working-directory: app
         run: native build
 
-      - name: Package for Linux
-        working-directory: app
-        run: native package --target linux --output ../compack-appimage
-
       - name: Create AppImage
+        working-directory: app
         run: |
           # Download appimagetool
           wget -q https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-x86_64.appimage
           chmod +x appimagetool-x86_64.appimage
 
-          # Create AppDir structure
+          # Create AppDir structure manually
+          rm -rf compack.AppDir
           mkdir -p compack.AppDir/usr/bin
           mkdir -p compack.AppDir/usr/share/applications
           mkdir -p compack.AppDir/usr/share/icons/hicolor/512x512/apps
 
-          # Copy the packaged files
-          cp -r compack-appimage/bin/* compack.AppDir/usr/bin/
-          cp -r compack-appimage/share/applications/* compack.AppDir/usr/share/applications/ 2>/dev/null || true
-          cp -r compack-appimage/share/icons/hicolor/*/apps/* compack.AppDir/usr/share/icons/hicolor/512x512/apps/ 2>/dev/null || true
+          # Copy the built binary
+          cp zig-out/bin/compack compack.AppDir/usr/bin/
+          chmod +x compack.AppDir/usr/bin/compack
+
+          # Copy the compack CLI binary into the AppImage
+          cp assets/compack compack.AppDir/usr/bin/compack-cli
+          chmod +x compack.AppDir/usr/bin/compack-cli
+
+          # Create desktop file
+          cat > compack.AppDir/compack.desktop << 'EOF'
+          [Desktop Entry]
+          Type=Application
+          Name=Compack
+          Comment=A fast Minecraft resource/data pack optimizer
+          Exec=compack
+          Icon=app-icon
+          Categories=Game;Utility;
+          EOF
+
+          # Copy icon to root of AppDir
+          cp assets/icon.png compack.AppDir/app-icon.png 2>/dev/null || true
 
           # Create AppRun
           printf '#!/bin/bash\nHERE="$(dirname "$(readlink -f "$0")")"\nexec "$HERE/usr/bin/compack" "$@"\n' > compack.AppDir/AppRun
           chmod +x compack.AppDir/AppRun
 
-          # Copy icon and desktop file to root of AppDir (required by AppImage)
-          cp app/assets/icon.png compack.AppDir/app-icon.png 2>/dev/null || true
-          cp compack-appimage/share/applications/*.desktop compack.AppDir/ 2>/dev/null || true
-
           # Build the AppImage
-          ./appimagetool-x86_64.appimage compack.AppDir compack-x86_64.AppImage
+          ./appimagetool-x86_64.appimage compack.AppDir compack-desktop-x86_64.AppImage
 
       - uses: actions/upload-artifact@v4
         with:
           name: compack-desktop-appimage
-          path: compack-x86_64.AppImage
+          path: app/compack-desktop-x86_64.AppImage
           if-no-files-found: error
 
   release:
