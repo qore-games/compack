@@ -59,7 +59,7 @@ jobs:
         if: matrix.target == 'linux'
         run: |
           sudo apt-get update
-          sudo apt-get install -y libgtk-3-dev libglib2.0-dev libsoup-3.0-dev libxml2-dev
+          sudo apt-get install -y libgtk-4-dev libglib2.0-dev libsoup-3.0-dev libxml2-dev
 
       - name: Build compack binary
         shell: bash
@@ -77,18 +77,33 @@ jobs:
 
       - name: Package the app
         id: pkg
-        run: native package --target ${{ matrix.target }} --output ../compack-desktop --archive
+        run: |
+          if [ "${{ matrix.target }}" = "windows" ]; then
+            native package --target ${{ matrix.target }} --output ../compack-desktop
+          else
+            native package --target ${{ matrix.target }} --output ../compack-desktop --archive
+          fi
 
       - name: Locate the archive
         id: archive
         shell: bash
         working-directory: .
         run: |
-          f=$(ls compack-*ReleaseFast.tar.gz compack-*ReleaseFast.zip 2>/dev/null | head -1 || true)
-          if [ -z "$f" ]; then f=$(ls app-*ReleaseFast.tar.gz app-*ReleaseFast.zip 2>/dev/null | head -1 || true); fi
-          if [ -z "$f" ]; then echo "no archive found"; find . -name 'compack-*ReleaseFast.*' | head; exit 1; fi
-          echo "path=$f" >> "$GITHUB_OUTPUT"
-          echo "name=$(basename "$f")" >> "$GITHUB_OUTPUT"
+          if [ "${{ matrix.target }}" = "windows" ]; then
+            # Windows: manually zip the packaged directory
+            cd compack-desktop
+            zip -r ../compack-${{ matrix.target }}-windows.zip .
+            cd ..
+            echo "path=compack-${{ matrix.target }}-windows.zip" >> "$GITHUB_OUTPUT"
+            echo "name=compack-${{ matrix.target }}-windows.zip" >> "$GITHUB_OUTPUT"
+          else
+            # macOS/Linux: find the archive created by native package --archive
+            f=$(ls compack-*ReleaseFast.tar.gz compack-*ReleaseFast.zip compack-*ReleaseFast.dmg 2>/dev/null | head -1 || true)
+            if [ -z "$f" ]; then f=$(ls app-*ReleaseFast.tar.gz app-*ReleaseFast.zip app-*ReleaseFast.dmg 2>/dev/null | head -1 || true); fi
+            if [ -z "$f" ]; then echo "no archive found"; find . -name 'compack-*ReleaseFast.*' | head; exit 1; fi
+            echo "path=$f" >> "$GITHUB_OUTPUT"
+            echo "name=$(basename "$f")" >> "$GITHUB_OUTPUT"
+          fi
 
       - uses: actions/upload-artifact@v4
         with:
@@ -121,7 +136,7 @@ jobs:
       - name: Install dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y libgtk-3-dev libglib2.0-dev libsoup-3.0-dev libxml2-dev
+          sudo apt-get install -y libgtk-4-dev libglib2.0-dev libsoup-3.0-dev libxml2-dev
 
       - name: Build compack binary
         run: |
