@@ -24,7 +24,7 @@ jobs:
             binary: compack
           - target: linux
             os: linux
-            runner: ubuntu-22.04
+            runner: ubuntu-24.04
             goos: linux
             goarch: amd64
             binary: compack
@@ -113,7 +113,7 @@ jobs:
 
   appimage:
     name: AppImage — linux
-    runs-on: ubuntu-22.04
+    runs-on: ubuntu-24.04
     needs: build
     steps:
       - uses: actions/checkout@v4
