@@ -76,11 +76,14 @@ jobs:
         run: native build
 
       - name: Package the app
-        id: pkg
         shell: bash
         run: |
           if [ "${{ matrix.target }}" = "windows" ]; then
-            native package --target ${{ matrix.target }} --output ../compack-desktop
+            # Windows: skip native package (has StreamTooLong issue), just zip the binary
+            mkdir -p compack-desktop
+            cp zig-out/bin/compack.exe compack-desktop/
+            cp assets/icon.png compack-desktop/ 2>/dev/null || true
+            zip -r compack-windows.zip compack-desktop/
           else
             native package --target ${{ matrix.target }} --output ../compack-desktop --archive
           fi
@@ -91,12 +94,9 @@ jobs:
         working-directory: .
         run: |
           if [ "${{ matrix.target }}" = "windows" ]; then
-            # Windows: manually zip the packaged directory
-            cd compack-desktop
-            zip -r ../compack-${{ matrix.target }}-windows.zip .
-            cd ..
-            echo "path=compack-${{ matrix.target }}-windows.zip" >> "$GITHUB_OUTPUT"
-            echo "name=compack-${{ matrix.target }}-windows.zip" >> "$GITHUB_OUTPUT"
+            # Windows: use the manually created zip
+            echo "path=app/compack-windows.zip" >> "$GITHUB_OUTPUT"
+            echo "name=compack-windows.zip" >> "$GITHUB_OUTPUT"
           else
             # macOS/Linux: find the archive created by native package --archive
             f=$(ls compack-*ReleaseFast.tar.gz compack-*ReleaseFast.zip compack-*ReleaseFast.dmg 2>/dev/null | head -1 || true)
