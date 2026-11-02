@@ -1,7 +1,7 @@
 {
   "name": "compack",
   "private": true,
-  "version": "1.1.0",
+  "version": "1.1.1",
   "description": "Compack - a small native desktop app that runs the compack Minecraft resource/data pack optimizer.",
   "license": "MIT",
   "dependencies": {

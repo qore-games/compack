@@ -2,7 +2,6 @@ package optim
 
 import (
 	"crypto/sha256"
-	"embed"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -13,16 +12,6 @@ import (
 	"runtime"
 	"sync"
 )
-
-// Pre-built binaries (oxipng, OptiVorbis, pngquant from upstream, oggshrink
-// from tools/oggshrink) for every GOOS/GOARCH combination they build for. Embedding them turns
-// compack into a self-contained binary with no runtime binary dependency on
-// $PATH for PNG and OGG optimization. windows/arm64 has no upstream release
-// for either tool, so it is intentionally absent; callers see ErrBinNotFound
-// on that platform.
-//
-//go:embed bin
-var binFS embed.FS
 
 // ErrBinNotFound is returned by extractBin when no embedded binary exists for
 // the current GOOS/GOARCH (e.g. windows/arm64 has no upstream release).

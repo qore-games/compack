@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.1.1
+
+- Each CLI binary embeds only its own platform's tools: 19 MB → 7-8 MB. The
+  bundled CLI fits the desktop packager again (1.1.0's macOS and Linux desktop
+  builds failed to package).
+
 ## 1.1.0
 
 On the Minebox pack (62k files, 32 threads): 20.4 s → 13.3 s, 70.9 MB → 68.8 MB,

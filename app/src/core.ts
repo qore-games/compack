@@ -41,7 +41,7 @@ const MAX_NOTES = 5;
 // The app's own version — kept in sync with app.zon `.version` and with the
 // GitHub release tags. The update banner compares this against the latest
 // release `tag_name`.
-const CURRENT_VERSION = asciiBytes("1.1.0");
+const CURRENT_VERSION = asciiBytes("1.1.1");
 
 // Boot probe (macOS / Linux): the OS on the first line, then the bundled
 // compack CLI next to the app executable (the spawning app is the shell's
