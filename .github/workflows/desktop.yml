@@ -46,7 +46,7 @@ jobs:
 
       - uses: actions/setup-go@v5
         with:
-          go-version: '1.23'
+          go-version-file: go.mod
 
       - uses: goto-bus-stop/setup-zig@v2
         with:
@@ -66,11 +66,15 @@ jobs:
         working-directory: .
         run: |
           mkdir -p app/assets
-          GOOS=${{ matrix.goos }} GOARCH=${{ matrix.goarch }} go build -o app/assets/${{ matrix.binary }} .
+          GOOS=${{ matrix.goos }} GOARCH=${{ matrix.goarch }} go build -trimpath -ldflags "-s -w -X main.version=${GITHUB_REF_NAME:-dev}" -o app/assets/${{ matrix.binary }} .
           chmod +x app/assets/${{ matrix.binary }}
 
       - name: Check the app
         run: native check
+
+      - name: Test the core
+        if: matrix.target == 'linux'
+        run: node --test test/core.test.mjs
 
       - name: Build the app
         run: native build
@@ -79,11 +83,13 @@ jobs:
         shell: bash
         run: |
           if [ "${{ matrix.target }}" = "windows" ]; then
-            # Windows: skip native package (has StreamTooLong issue), use PowerShell to zip
-            mkdir -p compack-desktop
+            # Windows: skip native package (has StreamTooLong issue), use PowerShell to zip.
+            # The app runs the CLI from assets\compack.exe next to it (both are
+            # named compack.exe, so they cannot share a folder).
+            mkdir -p compack-desktop/assets
             cp zig-out/bin/compack.exe compack-desktop/
-            cp assets/compack.exe compack-desktop/ 2>/dev/null || true
-            cp assets/icon.png compack-desktop/ 2>/dev/null || true
+            cp assets/compack.exe compack-desktop/assets/
+            cp assets/icon.png compack-desktop/assets/
             powershell -Command "Compress-Archive -Path compack-desktop -DestinationPath compack-desktop-windows.zip -Force"
           else
             native package --target ${{ matrix.target }} --output ../compack-desktop --archive
@@ -129,7 +135,7 @@ jobs:
 
       - uses: actions/setup-go@v5
         with:
-          go-version: '1.23'
+          go-version-file: go.mod
 
       - uses: goto-bus-stop/setup-zig@v2
         with:
@@ -146,7 +152,7 @@ jobs:
       - name: Build compack binary
         run: |
           mkdir -p app/assets
-          GOOS=linux GOARCH=amd64 go build -o app/assets/compack .
+          GOOS=linux GOARCH=amd64 go build -trimpath -ldflags "-s -w -X main.version=${GITHUB_REF_NAME:-dev}" -o app/assets/compack .
           chmod +x app/assets/compack
 
       - name: Build the app

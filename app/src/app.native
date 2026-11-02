@@ -1,135 +1,182 @@
-<!-- compack desktop UI: a small, narrow, straight-to-the-point wrapper
-     around the `compack` CLI. Binds the core model in src/core.ts. -->
+<!-- compack desktop UI: pick a pack, pack it. Two columns: the pack and
+     its result on the left, the compression options on the right. Binds the
+     core model in src/core.ts. -->
 <scroll grow="1">
 <column gap="16" padding="20">
 
   <!-- header -->
-  <row gap="10" cross="center">
-    <text size="heading">compack</text>
-    <spacer grow="1"/>
-    <text foreground="text_muted" size="sm">v{currentVersionText}</text>
-    <button size="sm" variant="ghost" on-press="open_github">GitHub</button>
-    <badge>{platformLabel}</badge>
+  <row gap="8" cross="center">
+    <column gap="2" grow="1">
+      <text size="heading">compack</text>
+      <text size="sm" foreground="text_muted">Shrink Minecraft resource packs</text>
+    </column>
+    <text size="sm" foreground="text_muted">{versionText}</text>
+    <stack>
+      <button size="icon" variant="ghost" icon="external-link" label="compack on GitHub" on-press="open_github"/>
+      <tooltip anchor="below">GitHub</tooltip>
+    </stack>
   </row>
 
-  <!-- update banner -->
   <if test="{updateBannerVisible}">
-    <card padding="12">
-      <row gap="10" cross="center">
-        <icon name="download"/>
-        <text grow="1" wrap="true">Update available: {latestVersionText}</text>
-        <button size="sm" variant="outline" on-press="copy_update_link">Copy link</button>
-        <button size="sm" variant="ghost" on-press="dismiss_update">Dismiss</button>
-      </row>
-    </card>
+    <row gap="8" cross="center" padding="10" background="surface_subtle" radius="md">
+      <icon name="download" foreground="info"/>
+      <text grow="1" size="sm">compack {latestVersionText} is out</text>
+      <button size="sm" variant="ghost" on-press="open_release">Download</button>
+      <button size="sm" variant="ghost" icon="x" label="Dismiss" on-press="dismiss_update"/>
+    </row>
   </if>
-  <else>
-    <if test="{updatePending}">
-      <row gap="8" cross="center" padding="4">
-        <spinner/>
-        <text foreground="text_muted">Checking for updates...</text>
-      </row>
-    </if>
-  </else>
 
-  <!-- input folder or .zip -->
-  <card padding="16">
-    <column gap="12">
-      <text size="lg">Input</text>
-      <column gap="8">
-        <text foreground="text_muted">Resource pack (folder or .zip)</text>
-        <text-field grow="1" text="{inputEditor.text}" on-input="edit_input" placeholder="Path to the pack folder or .zip..." label="Resource pack folder or .zip"/>
-        <row gap="8">
-          <button grow="1" size="sm" variant="secondary" disabled="{isPacking}" on-press="browse_input_folder">Browse folder</button>
-          <button grow="1" size="sm" variant="secondary" disabled="{isPacking}" on-press="browse_input_file">Browse .zip</button>
-        </row>
-      </column>
-    </column>
-  </card>
+  <row gap="16" cross="start">
 
-  <!-- output folder (compack writes <input name>-compack.zip into it) -->
-  <card padding="16">
-    <column gap="12">
-      <text size="lg">Output</text>
-      <column gap="8">
-        <text foreground="text_muted">Output folder</text>
-        <text-field grow="1" text="{outputEditor.text}" on-input="edit_output" placeholder="Folder to drop the .zip into..." label="Output folder"/>
-        <button size="sm" variant="secondary" disabled="{isPacking}" on-press="browse_output">Browse</button>
-      </column>
-    </column>
-  </card>
-
-  <!-- optimization settings (collapsible) -->
-  <if test="{optimizationOpen}">
+  <!-- left: the pack, then packing -->
+  <column gap="14" grow="1">
     <card padding="16">
-      <column gap="12">
-        <row gap="8" cross="center">
-          <text size="lg" grow="1">Optimization</text>
-          <button size="sm" variant="ghost" on-press="toggle_optimization">Hide</button>
-        </row>
-        <column gap="10">
-          <row gap="10">
-            <switch grow="1" checked="{pngLossy}" on-toggle="toggle_png_lossy">PNG lossy palette</switch>
-            <switch grow="1" checked="{pngRecompress}" on-toggle="toggle_png_recompress">PNG recompress</switch>
+      <column gap="14">
+        <column gap="6">
+          <text size="sm" foreground="text_muted">Pack</text>
+          <row gap="6" cross="center">
+            <text-field grow="1" text="{inputEditor.text}" on-input="edit_input" placeholder="Folder or .zip" label="Resource pack folder or .zip"/>
+            <stack>
+              <button size="icon" variant="secondary" icon="folder-open" label="Choose a folder" disabled="{isPacking}" on-press="browse_input_folder"/>
+              <tooltip anchor="below">Choose a folder</tooltip>
+            </stack>
+            <stack>
+              <button size="icon" variant="secondary" icon="archive" label="Choose a .zip" disabled="{isPacking}" on-press="browse_input_file"/>
+              <tooltip anchor="below">Choose a .zip</tooltip>
+            </stack>
           </row>
-          <row gap="10">
-            <switch grow="1" checked="{pngStripMeta}" on-toggle="toggle_png_strip">Strip PNG metadata</switch>
-            <switch grow="1" checked="{pngProtectAlpha}" on-toggle="toggle_png_protect_alpha">Protect alpha</switch>
+        </column>
+        <column gap="6">
+          <text size="sm" foreground="text_muted">Save to</text>
+          <row gap="6" cross="center">
+            <text-field grow="1" text="{outputEditor.text}" on-input="edit_output" placeholder="Same folder as the pack" label="Output folder"/>
+            <stack>
+              <button size="icon" variant="secondary" icon="folder" label="Choose the output folder" disabled="{isPacking}" on-press="browse_output"/>
+              <tooltip anchor="below">Choose a folder</tooltip>
+            </stack>
           </row>
-          <row gap="10">
-            <switch grow="1" checked="{ogg}" on-toggle="toggle_ogg">Optimize OGG</switch>
-            <switch grow="1" checked="{oggStripComments}" on-toggle="toggle_ogg_strip">Strip OGG comments</switch>
-          </row>
-          <row gap="10">
-            <switch grow="1" checked="{jsonMinify}" on-toggle="toggle_json">Minify JSON</switch>
-            <switch grow="1" checked="{textMinify}" on-toggle="toggle_text">Minify text/shaders</switch>
-          </row>
+          <if test="{hasInput}">
+            <row gap="6" cross="center">
+              <icon name="arrow-right" foreground="text_muted" width="14" height="14"/>
+              <text grow="1" size="sm" foreground="text_muted">{outputPreviewText}</text>
+            </row>
+          </if>
         </column>
       </column>
     </card>
-  </if>
-  <else>
-    <row gap="8" cross="center" padding="8">
-      <text size="lg" grow="1">Optimization</text>
-      <button size="sm" variant="ghost" on-press="toggle_optimization">Show</button>
-    </row>
-  </else>
 
-  <!-- run / result -->
-  <column gap="12">
-    <if test="{isPacking}">
-      <button variant="destructive" on-press="cancel_pack">{packButtonText}</button>
-    </if>
-    <else>
-      <button variant="primary" disabled="{not canPackNow}" on-press="pack">{packButtonText}</button>
-    </else>
-
-    <if test="{isPacking}">
-      <column gap="6">
-        <row gap="8" cross="center">
-          <spinner/>
-          <text grow="1" wrap="true" foreground="text_muted">{progressText}</text>
-        </row>
-        <if test="{filesProcessed > 0}">
-          <text size="sm" foreground="text_muted">{filesProcessedText}</text>
+      <!-- run: progress while packing, else the last result above the button -->
+      <if test="{isPacking}">
+        <card padding="16">
+          <column gap="10">
+            <row gap="8" cross="center">
+              <spinner/>
+              <text grow="1">Packing</text>
+              <text foreground="text_muted">{progressPercentText}</text>
+            </row>
+            <progress value="{progressValue}" label="Packing progress"/>
+            <column gap="2">
+              <text size="sm" foreground="text_muted">{progressCountText}</text>
+              <text size="sm" foreground="text_muted">{progressFileText}</text>
+            </column>
+            <button size="sm" variant="outline" on-press="cancel_pack">Stop</button>
+          </column>
+        </card>
+      </if>
+      <else>
+        <if test="{isDone}">
+          <card padding="16">
+            <column gap="12">
+              <column gap="4">
+                <row gap="10" cross="center">
+                  <icon name="check-circle" foreground="success" width="22" height="22"/>
+                  <text size="heading">{resultSavedText}</text>
+                </row>
+                <text size="sm" foreground="text_muted">{resultSizesText}</text>
+              </column>
+              <separator/>
+              <row gap="6" cross="center">
+                <text grow="1">{outNameText}</text>
+                <stack>
+                  <button size="icon" variant="ghost" icon="folder-open" label="Show in folder" on-press="show_in_folder"/>
+                  <tooltip anchor="above">Show in folder</tooltip>
+                </stack>
+                <stack>
+                  <button size="icon" variant="ghost" icon="copy" label="Copy path" on-press="copy_out_path"/>
+                  <tooltip anchor="above">Copy path</tooltip>
+                </stack>
+              </row>
+              <row gap="6" cross="center">
+                <text grow="1" size="sm" foreground="text_muted">SHA-1 {sha1}</text>
+                <stack>
+                  <button size="icon" variant="ghost" icon="copy" label="Copy SHA-1" on-press="copy_sha1"/>
+                  <tooltip anchor="above">Copy SHA-1</tooltip>
+                </stack>
+              </row>
+              <if test="{hasNotes}">
+                <column gap="4">
+                  <text size="sm" foreground="warning">{notesTitleText}</text>
+                  <for each="notes" as="n">
+                    <text size="sm" foreground="text_muted" wrap="true">{n.text}</text>
+                  </for>
+                </column>
+              </if>
+            </column>
+          </card>
         </if>
-      </column>
-    </if>
-
-    <if test="{hadResult}">
-      <column gap="6">
-        <row gap="8" cross="start" padding="10" background="surface" radius="lg">
-          <text>{statusText}</text>
-          <text grow="1" wrap="true">{resultText}</text>
-        </row>
-        <if test="{outputSize > 0}">
-          <text size="sm" foreground="text_muted">Output size: {outputSizeText}</text>
+        <if test="{isFailed}">
+          <row gap="8" cross="start" padding="12" background="surface_subtle" radius="md">
+            <icon name="alert" foreground="destructive"/>
+            <text grow="1" size="sm" wrap="true">{message}</text>
+          </row>
         </if>
-      </column>
-    </if>
+        <if test="{isStopped}">
+          <text size="sm" foreground="text_muted">Stopped. Nothing was written.</text>
+        </if>
+        <button size="lg" variant="primary" disabled="{not canPackNow}" on-press="pack">Pack</button>
+      </else>
   </column>
 
-  <text foreground="text_muted" size="sm" wrap="true">For fine-tuning (PNG level, quant range, OGG) use config.yml or the compack CLI.</text>
-  <spacer height="20"/>
+  <!-- right: compression -->
+  <column gap="10" width="330">
+    <tabs label="Compression">
+      <button grow="1" selected="{isLossless}" on-press="preset_lossless">Lossless</button>
+      <button grow="1" selected="{isBalanced}" on-press="preset_balanced">Balanced</button>
+      <button grow="1" selected="{isSmallest}" on-press="preset_smallest">Smallest</button>
+    </tabs>
+    <text size="sm" foreground="text_muted">{presetHintText}</text>
+    <!-- Switches read the model when they mount only: a new key remounts
+         them after a preset or the saved settings changed the options. -->
+    <for each="optionViews" key="rev" as="v">
+      <card padding="16">
+        <column gap="12">
+          <column gap="8">
+            <text size="sm" foreground="text_muted">Images</text>
+            <switch checked="{pngLossy}" on-toggle="toggle_png_lossy">8-bit palettes (lossy)</switch>
+            <switch checked="{pngProtectAlpha}" disabled="{not pngLossy}" on-toggle="toggle_png_protect_alpha">Keep transparent textures lossless</switch>
+            <switch checked="{pngRecompress}" on-toggle="toggle_png_recompress">Recompress</switch>
+            <switch checked="{pngStripMeta}" on-toggle="toggle_png_strip">Strip metadata</switch>
+          </column>
+          <separator/>
+          <column gap="8">
+            <text size="sm" foreground="text_muted">Sounds</text>
+            <switch checked="{oggLossy}" on-toggle="toggle_ogg_lossy">Re-encode heavy sounds (lossy)</switch>
+            <switch checked="{ogg}" on-toggle="toggle_ogg">Repackage (lossless)</switch>
+            <switch checked="{oggStripComments}" disabled="{not ogg}" on-toggle="toggle_ogg_strip">Strip metadata</switch>
+          </column>
+          <separator/>
+          <column gap="8">
+            <text size="sm" foreground="text_muted">Text</text>
+            <switch checked="{jsonMinify}" on-toggle="toggle_json">Minify JSON</switch>
+            <switch checked="{textMinify}" on-toggle="toggle_text">Minify shaders, .lang, .properties</switch>
+          </column>
+        </column>
+      </card>
+    </for>
+    <text size="sm" foreground="text_muted">More settings in the CLI's config.yml.</text>
+  </column>
+
+  </row>
+
 </column>
 </scroll>
