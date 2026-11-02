@@ -4,43 +4,50 @@
 // load times and distribution size:
 //
 //   - JSON / JSONC / .mcmeta: minify (strip comments + whitespace)
-//   - PNG: 100% lossless rewriter via embedded oxipng (drop ancillary chunks + recompress IDAT)
-//   - Ogg (.ogg / .oga): lossless repackaging via embedded OptiVorbis (metadata stripped)
+//   - PNG: lossy palette pass via embedded pngquant, then lossless recompression
+//     via embedded oxipng (drop ancillary chunks + recompress IDAT)
+//   - Ogg (.ogg / .oga): lossless repackaging via embedded OptiVorbis (metadata
+//     stripped), after an opt-in lossy re-encode via embedded oggshrink
 //   - GLSL (.vsh/.fsh/.glsl), .lang, .properties: strip comments + blanks
 //
-// The oxipng and OptiVorbis binaries are embedded inside compack for Linux /
-// macOS / Windows on amd64 + arm64 (windows/arm64 excepted — no upstream
-// release) so no external binaries need to be on $PATH. A live progress bar
-// is drawn on stderr while files are being optimized.
+// The tool binaries are embedded inside compack for Linux / macOS / Windows
+// on amd64 + arm64 (windows/arm64 excepted — no upstream release) so no
+// external binaries need to be on $PATH. A live progress bar is drawn on
+// stderr while files are being optimized.
 //
-// Everything else is passed through unchanged and stored with default ZIP
-// DEFLATE compression (klauspost/compress/flate, which yields a smaller
-// payload than the standard library at the same level). The output ZIP itself
-// is written in PackSquash-disregard mode: minimal headers, dummy timestamps +
-// no data descriptors + deduplication of identical files, all of which are
-// byte-for-byte valid for Minecraft's java.util.zip.ZipFile reader but may trip
-// up strict cross-tool ZIP readers.
+// Everything else is passed through unchanged and stored with ZIP DEFLATE
+// (klauspost/compress/flate, which yields a smaller payload than the
+// standard library at the same level), or stored as is when deflating would
+// not make it smaller. The output ZIP itself is written in PackSquash-disregard
+// mode (see zipwrite.go): byte-for-byte valid for Minecraft's
+// java.util.zip.ZipFile reader but may trip up strict cross-tool ZIP readers.
 package main
 
 import (
 	"archive/zip"
+	"bytes"
+	"crypto/sha1"
+	"encoding/hex"
 	"errors"
 	"flag"
 	"fmt"
+	"hash/crc32"
 	"io"
 	"io/fs"
 	"log"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"runtime"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
+	"github.com/klauspost/compress/flate"
 	"github.com/qore-games/compack/optim"
-	"github.com/schollz/progressbar/v3"
-	"golang.org/x/term"
 	"gopkg.in/yaml.v3"
 )
 
@@ -57,313 +64,256 @@ Usage:
 Examples:
   compack ./my-resourcepack -out pack.zip
   compack ./my-resourcepack.zip -out pack.zip
-  compack -png-strip-meta -ogg -json-minify ./my-pack
-  compack -skip-png -skip-ogg -json-minify ./my-pack        # only minify text/json
-  compack -config my-config.yml ./my-pack                  # use settings from config file
+  compack -skip-png-quant ./my-pack                         # lossless only
+  compack -skip-png -skip-ogg -skip-json -skip-text ./my-pack  # just ZIP everything
+  compack -config my-config.yml ./my-pack                   # use settings from a config file
+  compack -cache .compack-cache ./my-pack                   # reuse PNG/OGG results across runs
 
 Flags:`
 
 // config mirrors every user-facing setting. It is populated from (in order):
 // defaults -> config.yml (if found / specified) -> explicit command-line flags.
+// The yaml tags are the config.yml keys.
 type config struct {
+	Out        string `yaml:"out"`
+	Threads    int    `yaml:"threads"`
+	Quiet      bool   `yaml:"quiet"`
+	Verbose    bool   `yaml:"verbose"`
+	DryRun     bool   `yaml:"dry_run"`
+	NoProgress bool   `yaml:"no_progress"`
+	Events     bool   `yaml:"events"`
+	Cache      string `yaml:"cache"`
+	Zip        struct {
+		// LocalNames repeats each name in its local file header, which
+		// Minecraft never reads but 7-Zip needs to open the archive.
+		LocalNames bool `yaml:"local_names"`
+	} `yaml:"zip"`
+
+	optim.Options `yaml:",inline"`
+
 	// inPath is the input resource/data pack: either a directory or a .zip
 	// archive.
-	inPath     string
-	outZip     string
-	threads    int
-	quiet      bool
-	verbose    bool
-	dryRun     bool
-	noProgress bool
-
-	optim.Options
-}
-
-// yamlConfig is the on-disk representation of compack's settings. Field names
-// use snake_case keys via yaml struct tags; absent keys keep their go zero
-// value (and are then overlaid on top of the built-in defaults using
-// applyYAML, so an unset entry does not stomp a default).
-type yamlConfig struct {
-	Out        string   `yaml:"out"`
-	Threads    int      `yaml:"threads"`
-	Quiet      bool     `yaml:"quiet"`
-	Verbose    bool     `yaml:"verbose"`
-	DryRun     bool     `yaml:"dry_run"`
-	NoProgress bool     `yaml:"no_progress"`
-	JSON       yamlJSON `yaml:"json"`
-	PNG        yamlPNG  `yaml:"png"`
-	OGG        yamlOGG  `yaml:"ogg"`
-	Text       yamlText `yaml:"text"`
-}
-
-type yamlJSON struct {
-	Minify *bool `yaml:"minify"`
-}
-
-type yamlPNG struct {
-	Recompress    *bool `yaml:"recompress"`
-	StripMeta     *bool `yaml:"strip_meta"`
-	Level         *int  `yaml:"level"`
-	KeepColorProf *bool `yaml:"keep_color_profile"`
-	LossyQuant    *bool `yaml:"lossy_quant"`
-	QuantMin      *int  `yaml:"quant_min"`
-	QuantMax      *int  `yaml:"quant_max"`
-	ProtectAlpha  *bool `yaml:"protect_alpha"`
-}
-
-type yamlOGG struct {
-	Optimize      *bool `yaml:"optimize"`
-	StripComments *bool `yaml:"strip_comments"`
-}
-
-type yamlText struct {
-	Minify *bool `yaml:"minify"`
+	inPath      string
+	configPath  string
+	showVersion bool
 }
 
 // defaultConfig returns the built-in default settings used when neither a
-// config file nor flags override them. These values match the historical
-// defaults from before config.yml support was added.
+// config file nor flags override them.
 func defaultConfig() config {
 	return config{
-		outZip:  "pack.zip",
-		threads: runtime.NumCPU(),
+		Out:     "pack.zip",
+		Threads: runtime.NumCPU(),
 		Options: optim.Options{
-			JSONMinify:       true,
-			PNGRecompress:    true,
-			PNGStripMeta:     true,
-			PNGLevel:         0,
-			PNGLossyQuant:    true,
-			PNGQuantMin:      65,
-			PNGQuantMax:      90,
-			PNGProtectAlpha:  true,
-			OGGOptimize:      true,
-			OGGStripComments: true,
-			TextMinify:       true,
+			JSON: optim.JSONOptions{Minify: true},
+			PNG: optim.PNGOptions{
+				Recompress:   true,
+				StripMeta:    true,
+				Lossy:        true,
+				QuantMin:     65,
+				QuantMax:     90,
+				ProtectAlpha: true,
+			},
+			OGG:  optim.OGGOptions{Optimize: true, StripComments: true, Quality: 4},
+			Text: optim.TextOptions{Minify: true},
 		},
 	}
 }
 
-// applyYAML overlays the parsed YAML document on top of cfg. Only keys that
-// were present in the file (non-nil pointers) are applied, so an absent key
-// in config.yml never overrides the default value.
-func (cfg *config) applyYAML(y yamlConfig) {
-	if y.Out != "" {
-		cfg.outZip = y.Out
-	}
-	if y.Threads > 0 {
-		cfg.threads = y.Threads
-	}
-	cfg.quiet = cfg.quiet || y.Quiet
-	cfg.verbose = cfg.verbose || y.Verbose
-	cfg.dryRun = cfg.dryRun || y.DryRun
-	cfg.noProgress = cfg.noProgress || y.NoProgress
+// offFlag is a boolean flag that turns every setting it points at off: the
+// -skip-* aliases. A later flag on the command line still wins.
+type offFlag []*bool
 
-	if y.JSON.Minify != nil {
-		cfg.JSONMinify = *y.JSON.Minify
+func (f offFlag) String() string   { return "false" }
+func (f offFlag) IsBoolFlag() bool { return true }
+func (f offFlag) Set(s string) error {
+	on, err := strconv.ParseBool(s)
+	if on {
+		for _, p := range f {
+			*p = false
+		}
 	}
-	if y.PNG.Recompress != nil {
-		cfg.PNGRecompress = *y.PNG.Recompress
+	return err
+}
+
+// newFlagSet binds every flag to cfg, using cfg's current values as defaults.
+func newFlagSet(cfg *config) *flag.FlagSet {
+	fs := flag.NewFlagSet("compack", flag.ContinueOnError)
+	fs.Usage = func() {
+		fmt.Fprintln(fs.Output(), usage)
+		fs.PrintDefaults()
 	}
-	if y.PNG.StripMeta != nil {
-		cfg.PNGStripMeta = *y.PNG.StripMeta
-	}
-	if y.PNG.Level != nil {
-		cfg.PNGLevel = *y.PNG.Level
-	}
-	if y.PNG.LossyQuant != nil {
-		cfg.PNGLossyQuant = *y.PNG.LossyQuant
-	}
-	if y.PNG.QuantMin != nil {
-		cfg.PNGQuantMin = *y.PNG.QuantMin
-	}
-	if y.PNG.QuantMax != nil {
-		cfg.PNGQuantMax = *y.PNG.QuantMax
-	}
-	if y.PNG.KeepColorProf != nil {
-		cfg.Options.PNGKeepColorMng = *y.PNG.KeepColorProf
-	}
-	if y.PNG.ProtectAlpha != nil {
-		cfg.Options.PNGProtectAlpha = *y.PNG.ProtectAlpha
-	}
-	if y.OGG.Optimize != nil {
-		cfg.OGGOptimize = *y.OGG.Optimize
-	}
-	if y.OGG.StripComments != nil {
-		cfg.OGGStripComments = *y.OGG.StripComments
-	}
-	if y.Text.Minify != nil {
-		cfg.TextMinify = *y.Text.Minify
+	fs.StringVar(&cfg.configPath, "config", cfg.configPath, "path to a config.yml file with default settings (auto-loaded when present as ./config.yml)")
+	fs.BoolVar(&cfg.showVersion, "version", false, "print the version and exit")
+	fs.StringVar(&cfg.Out, "out", cfg.Out, "output ZIP file path")
+	fs.IntVar(&cfg.Threads, "threads", cfg.Threads, "number of parallel file workers (0 = one per CPU)")
+	fs.BoolVar(&cfg.Quiet, "q", cfg.Quiet, "suppress per-file log lines")
+	fs.BoolVar(&cfg.Verbose, "v", cfg.Verbose, "verbose log (show file notes + skipped files)")
+	fs.BoolVar(&cfg.DryRun, "dry-run", cfg.DryRun, "walk and optimize but do not write the ZIP")
+	fs.BoolVar(&cfg.NoProgress, "no-progress", cfg.NoProgress, "never show the progress bar (default: auto when stderr is a TTY)")
+	fs.BoolVar(&cfg.Events, "events", cfg.Events, "print progress, notes and the summary as JSON lines on stdout (for tools and the desktop app)")
+	fs.StringVar(&cfg.Cache, "cache", cfg.Cache, "directory where PNG/OGG results are kept between runs, so unchanged files are not optimized again (off when empty)")
+	fs.BoolVar(&cfg.Zip.LocalNames, "zip-local-names", cfg.Zip.LocalNames, "also write file names in local headers (bigger; Minecraft does not need them, 7-Zip does)")
+
+	o := &cfg.Options
+	fs.BoolVar(&o.JSON.Minify, "json-minify", o.JSON.Minify, "minify JSON/JSONC/.mcmeta files")
+	fs.Var(offFlag{&o.JSON.Minify}, "skip-json", "do not minify JSON")
+
+	fs.BoolVar(&o.PNG.Recompress, "png-recompress", o.PNG.Recompress, "recompress PNG IDAT with oxipng")
+	fs.BoolVar(&o.PNG.StripMeta, "png-strip-meta", o.PNG.StripMeta, "drop ancillary PNG chunks (metadata removal)")
+	fs.IntVar(&o.PNG.Level, "png-level", o.PNG.Level, "oxipng optimization preset (1-6, 0 = best-effort default 4, >6 = max)")
+	fs.BoolVar(&o.PNG.KeepColorProfile, "png-keep-color-profile", o.PNG.KeepColorProfile, "keep gAMA/iCCP/cHRM/sRGB chunks")
+	fs.BoolVar(&o.PNG.Lossy, "png-lossy", o.PNG.Lossy, "lossily remap RGB/RGBA PNGs to an 8-bit palette via embedded pngquant (libimagequant) before the lossless oxipng pass; matches PackSquash's compression level")
+	fs.IntVar(&o.PNG.QuantMin, "png-quant-min", o.PNG.QuantMin, "pngquant --quality lower bound (0-100); below this quality the original pixels are kept")
+	fs.IntVar(&o.PNG.QuantMax, "png-quant-max", o.PNG.QuantMax, "pngquant --quality upper bound (0-100); trades palette size vs quality")
+	fs.BoolVar(&o.PNG.ProtectAlpha, "png-protect-alpha", o.PNG.ProtectAlpha, "skip the lossy pngquant pass for any RGBA PNG that actually uses its alpha channel (any non-fully-opaque pixel), preserving alpha values bit-for-bit; fully-opaque RGBA and RGB PNGs still get quantised")
+	fs.Var(offFlag{&o.PNG.Lossy}, "skip-png-quant", "do not run the lossy pngquant palette step (alias for -png-lossy=false)")
+	fs.Var(offFlag{&o.PNG.Recompress, &o.PNG.StripMeta, &o.PNG.Lossy}, "skip-png", "leave PNGs untouched (alias for -png-recompress=false -png-strip-meta=false -png-lossy=false)")
+
+	fs.BoolVar(&o.OGG.Optimize, "ogg", o.OGG.Optimize, "losslessly shrink OGG/Ogg Vorbis via OptiVorbis (use -skip-ogg to disable)")
+	fs.Var(offFlag{&o.OGG.Optimize}, "skip-ogg", "do not optimize OGGs (alias for -ogg=false)")
+	fs.BoolVar(&o.OGG.StripComments, "ogg-strip-comments", o.OGG.StripComments, "remove OGG comment fields (artist/title/etc.); set -ogg-strip-comments=false to keep")
+	fs.BoolVar(&o.OGG.Lossy, "ogg-lossy", o.OGG.Lossy, "re-encode OGGs at -ogg-quality (lossy; channels kept, sample rates above 48 kHz halved), keeping a re-encode only when it is at least 15% smaller")
+	fs.IntVar(&o.OGG.Quality, "ogg-quality", o.OGG.Quality, "Vorbis quality of -ogg-lossy re-encodes (0-10)")
+
+	fs.BoolVar(&o.Text.Minify, "text-minify", o.Text.Minify, "strip comments + blank lines from shaders/lang/properties")
+	fs.Var(offFlag{&o.Text.Minify}, "skip-text", "do not minify shaders/lang/properties")
+	return fs
+}
+
+// parseFlags parses flags and positional arguments in any order (the stdlib
+// parser stops at the first positional), so `compack ./pack -out pack.zip`
+// does not silently drop -out.
+func parseFlags(fs *flag.FlagSet, args []string) ([]string, error) {
+	var positional []string
+	for {
+		if err := fs.Parse(args); err != nil {
+			return nil, err
+		}
+		if fs.NArg() == 0 {
+			return positional, nil
+		}
+		positional = append(positional, fs.Arg(0))
+		args = fs.Args()[1:]
 	}
 }
 
-// loadConfigYAML reads and parses the YAML config file at path. A missing path
-// is a fatal error so users get a clear message when they typo -config.
-func loadConfigYAML(path string) (yamlConfig, error) {
-	var y yamlConfig
-	data, err := os.ReadFile(path)
+// parseArgs builds the config: defaults, then config.yml, then the flags.
+// The flags are parsed twice: first to find -config, because the file's
+// values must be in place before the explicit flags that override them.
+func parseArgs(args []string) (config, error) {
+	probe := defaultConfig()
+	pfs := newFlagSet(&probe)
+	pfs.SetOutput(io.Discard)
+	pfs.Usage = func() {}
+	_, _ = parseFlags(pfs, args) // errors are reported by the second pass
+
+	cfg := defaultConfig()
+	// Optional config file precedence:
+	//   1. -config <path>  -> load exactly that path (error if it cannot be read)
+	//   2. ./config.yml    -> auto-loaded if present in the working directory
+	//   3. built-in defaults -> otherwise
+	path := probe.configPath
+	if path == "" {
+		if _, err := os.Stat("config.yml"); err == nil {
+			path = "config.yml"
+		}
+	}
+	if path != "" {
+		data, err := os.ReadFile(path)
+		if err == nil {
+			err = yaml.Unmarshal(data, &cfg)
+		}
+		if err != nil {
+			return cfg, fmt.Errorf("load config %q: %w", path, err)
+		}
+		if cfg.Out == "" {
+			cfg.Out = defaultConfig().Out
+		}
+	}
+
+	fs := newFlagSet(&cfg)
+	positional, err := parseFlags(fs, args)
 	if err != nil {
-		return y, err
+		return cfg, err
 	}
-	if err := yaml.Unmarshal(data, &y); err != nil {
-		return y, fmt.Errorf("parse YAML: %w", err)
+	if cfg.showVersion {
+		return cfg, nil
 	}
-	return y, nil
-}
-
-// scanConfigFlag peeks at argv to find a -config / --config value before the
-// main flag parser runs. This lets us load the YAML file first so its values
-// can be used as the defaults for the flag parser, meaning any explicit flag
-// passed on the command line overrides the YAML value, and un-set flags fall
-// back to the YAML value. Returns ("", nil) when -config is absent.
-func scanConfigFlag(args []string) (string, error) {
-	for i := 0; i < len(args); i++ {
-		a := args[i]
-		if a == "--" {
-			return "", nil
-		}
-		if !strings.HasPrefix(a, "-") || a == "-" {
-			continue
-		}
-		name := strings.TrimLeft(a, "-")
-		if eq := strings.IndexByte(name, '='); eq >= 0 {
-			if name[:eq] != "config" {
-				continue
-			}
-			return name[eq+1:], nil
-		}
-		if name != "config" {
-			continue
-		}
-		if i+1 >= len(args) {
-			return "", errors.New("-config requires a path argument")
-		}
-		return args[i+1], nil
+	switch len(positional) {
+	case 0:
+		fs.Usage()
+		return cfg, errors.New("missing input path (directory or .zip)")
+	case 1:
+		cfg.inPath = positional[0]
+	default:
+		return cfg, fmt.Errorf("unexpected argument %q (one input path only)", positional[1])
 	}
-	return "", nil
+	if cfg.Threads < 1 {
+		cfg.Threads = runtime.NumCPU()
+	}
+	return cfg, nil
 }
 
 func main() {
-	if err := run(os.Args[1:]); err != nil {
+	log.SetFlags(0)
+	err := run(os.Args[1:])
+	if errors.Is(err, flag.ErrHelp) {
+		return
+	}
+	if err != nil {
 		fmt.Fprintln(os.Stderr, "compack:", err)
 		os.Exit(1)
 	}
 }
 
 func run(args []string) error {
-	cfg := defaultConfig()
-
-	// Optional config file precedence:
-	//   1. -config <path>  -> load exactly that path (error if it cannot be read)
-	//   2. ./config.yml    -> auto-loaded if present in the working directory
-	//   3. built-in defaults -> otherwise
-	// The YAML values become the new defaults for the flag parser below, so any
-	// flag passed explicitly on the command line takes precedence over YAML and
-	// omitted flags fall back to the YAML value.
-	configPath, err := scanConfigFlag(args)
+	cfg, err := parseArgs(args)
 	if err != nil {
 		return err
 	}
-	if configPath == "" {
-		if _, statErr := os.Stat("config.yml"); statErr == nil {
-			configPath = "config.yml"
-		}
+	if cfg.showVersion {
+		fmt.Println("compack", version)
+		return nil
 	}
-	if configPath != "" {
-		y, err := loadConfigYAML(configPath)
-		if err != nil {
-			return fmt.Errorf("load config %q: %w", configPath, err)
-		}
-		cfg.applyYAML(y)
-	}
+	handleInterrupts()
+	onInterrupt(optim.Cleanup)
+	defer optim.Cleanup()
+	removeStale(os.TempDir())
+	optim.TempPrefix = tempPrefix()
 
-	fs := flag.NewFlagSet("compack", flag.ContinueOnError)
-	fs.Usage = func() {
-		fmt.Fprintln(os.Stderr, usage)
-		fs.PrintDefaults()
-	}
-
-	// Allow flags and positional arguments in any order by hoisting every
-	// non-flag token to the end of argv before calling fs.Parse. This avoids
-	// the surprise where `compack ./pack -out pack.zip` silently drops -out.
-	args = reorderArgs(args)
-
-	var (
-		skipPNG, skipOGG, skipJSON, skipText bool
-		skipPNGQuant                         bool
-		pngKeepColorMng                      bool
-	)
-	// -config is declared for --help / usage readability; its value was
-	// already consumed by scanConfigFlag above. We re-register it here so
-	// that fs.Parse does not reject an unknown flag.
-	var configFlag string
-	fs.StringVar(&configFlag, "config", configPath, "path to a config.yml file with default settings (auto-loaded when present as ./config.yml)")
-	fs.StringVar(&cfg.outZip, "out", cfg.outZip, "output ZIP file path")
-	fs.IntVar(&cfg.threads, "threads", cfg.threads, "number of parallel file workers")
-	fs.BoolVar(&cfg.quiet, "q", cfg.quiet, "suppress per-file log lines")
-	fs.BoolVar(&cfg.verbose, "v", cfg.verbose, "verbose log (show file notes + skipped files)")
-	fs.BoolVar(&cfg.dryRun, "dry-run", cfg.dryRun, "walk and optimize but do not write the ZIP")
-	fs.BoolVar(&cfg.noProgress, "no-progress", cfg.noProgress, "never show the progress bar (default: auto when stderr is a TTY)")
-
-	fs.BoolVar(&cfg.JSONMinify, "json-minify", cfg.JSONMinify, "minify JSON/JSONC/.mcmeta files")
-	fs.BoolVar(&skipJSON, "skip-json", false, "do not minify JSON")
-
-	fs.BoolVar(&cfg.PNGRecompress, "png-recompress", cfg.PNGRecompress, "recompress PNG IDAT with strongest zlib level")
-	fs.BoolVar(&cfg.PNGStripMeta, "png-strip-meta", cfg.PNGStripMeta, "drop ancillary PNG chunks (metadata removal)")
-	fs.BoolVar(&skipPNG, "skip-png", false, "do not optimize PNGs (alias for -png-recompress=false -png-strip-meta=false)")
-	fs.IntVar(&cfg.PNGLevel, "png-level", cfg.PNGLevel, "oxipng optimization preset (1-6, 0 = best-effort default 4, >6 = max)")
-	fs.BoolVar(&pngKeepColorMng, "png-keep-color-profile", false, "keep gAMA/iCCP/cHRM/sRGB chunks")
-
-	fs.BoolVar(&cfg.PNGLossyQuant, "png-lossy", cfg.PNGLossyQuant, "lossily remap RGB/RGBA PNGs to an 8-bit palette via embedded pngquant (libimagequant) before the lossless oxipng pass; matches PackSquash's compression level")
-	fs.BoolVar(&skipPNGQuant, "skip-png-quant", false, "do not run the lossy pngquant palette step (alias for -png-lossy=false)")
-	fs.IntVar(&cfg.PNGQuantMin, "png-quant-min", cfg.PNGQuantMin, "pngquant --quality lower bound (0-100); below this quality the original pixels are kept")
-	fs.IntVar(&cfg.PNGQuantMax, "png-quant-max", cfg.PNGQuantMax, "pngquant --quality upper bound (0-100); trades palette size vs quality")
-
-	fs.BoolVar(&cfg.PNGProtectAlpha, "png-protect-alpha", cfg.PNGProtectAlpha, "skip the lossy pngquant pass for any RGBA PNG that actually uses its alpha channel (any non-fully-opaque pixel), preserving alpha values bit-for-bit; fully-opaque RGBA and RGB PNGs still get quantised")
-
-	fs.BoolVar(&cfg.OGGOptimize, "ogg", cfg.OGGOptimize, "losslessly shrink OGG/Ogg Vorbis via OptiVorbis (use -skip-ogg to disable)")
-	fs.BoolVar(&skipOGG, "skip-ogg", false, "do not optimize OGGs (alias for -ogg=false)")
-	fs.BoolVar(&cfg.OGGStripComments, "ogg-strip-comments", cfg.OGGStripComments, "remove OGG comment fields (artist/title/etc.); set -ogg-strip-comments=false to keep")
-
-	fs.BoolVar(&cfg.TextMinify, "text-minify", cfg.TextMinify, "strip comments + blank lines from shaders/lang/properties")
-	fs.BoolVar(&skipText, "skip-text", false, "do not minify shaders/lang/properties")
-
-	if err := fs.Parse(args); err != nil {
+	rep := newReporter(cfg, os.Stdout)
+	if err := build(cfg, rep); err != nil {
+		rep.fail(err)
 		return err
 	}
-	if skipJSON {
-		cfg.JSONMinify = false
-	}
-	if skipPNG {
-		cfg.PNGRecompress = false
-		cfg.PNGStripMeta = false
-	}
-	if skipPNGQuant {
-		cfg.PNGLossyQuant = false
-	}
-	if skipOGG {
-		cfg.OGGOptimize = false
-	}
-	if skipText {
-		cfg.TextMinify = false
-	}
-	// png-keep-color-profile is an explicit-set flag (default false). Only
-	// respect it when set on the CLI; otherwise keep the YAML value already
-	// applied above. fs.Visit reports only flags that were explicitly set.
-	fs.Visit(func(f *flag.Flag) {
-		if f.Name == "png-keep-color-profile" {
-			cfg.Options.PNGKeepColorMng = pngKeepColorMng
-		}
-	})
+	return nil
+}
 
-	if fs.NArg() < 1 {
-		fs.Usage()
-		return errors.New("missing input path (directory or .zip)")
-	}
-	cfg.inPath = fs.Arg(0)
-	if cfg.threads < 1 {
-		cfg.threads = 1
-	}
-	return build(cfg)
+// interruptCleanups run when the process is interrupted (SIGINT/SIGTERM, e.g.
+// the desktop app's Stop button), so no temp file outlives a cancelled run.
+var interruptCleanups struct {
+	sync.Mutex
+	fns []func()
+}
+
+func onInterrupt(fn func()) {
+	interruptCleanups.Lock()
+	defer interruptCleanups.Unlock()
+	interruptCleanups.fns = append(interruptCleanups.fns, fn)
+}
+
+func handleInterrupts() {
+	ch := make(chan os.Signal, 1)
+	signal.Notify(ch, os.Interrupt, syscall.SIGTERM)
+	go func() {
+		<-ch
+		interruptCleanups.Lock()
+		for _, fn := range interruptCleanups.fns {
+			fn()
+		}
+		os.Exit(130)
+	}()
 }
 
 // fileSpec is one discovered resource pack file.
@@ -375,221 +325,257 @@ type fileSpec struct {
 	read func() ([]byte, error)
 }
 
-// buildResult is the optimized form of one input file produced by the worker
-// pool. We keep the bytes inline so the ZIP writer can stream them in any
-// order we like without re-reading from disk.
-type buildResult struct {
+// entry is one optimized file, ready for the ZIP writer.
+type entry struct {
 	rel     string
-	orig    int64
-	new     int64
-	method  uint16
+	orig    int64 // input size
+	size    int64 // optimized (uncompressed) size
 	changed bool
-	data    []byte
 	note    string
+	method  uint16 // zip.Store or zip.Deflate
+	crc     uint32 // CRC-32 of the optimized bytes
+	payload []byte // the bytes as stored in the ZIP (deflated or not)
 }
 
-func build(cfg config) error {
-	start := time.Now()
-	info, err := os.Stat(cfg.inPath)
-	if err != nil {
-		return fmt.Errorf("stat input: %w", err)
-	}
+// summary is the outcome of a run.
+type summary struct {
+	Files       int    `json:"files"`
+	Optimized   int    `json:"optimized"`
+	Notes       int    `json:"notes"`
+	InputBytes  int64  `json:"input_bytes"`  // the input .zip, or the sum of the folder's files
+	OutputBytes int64  `json:"output_bytes"` // the written ZIP (what it would be on a dry run)
+	DedupBytes  int64  `json:"dedup_bytes"`
+	Millis      int64  `json:"ms"`
+	Out         string `json:"out,omitempty"` // empty on a dry run
+	SHA1        string `json:"sha1,omitempty"`
+}
 
-	var files []fileSpec
-	if info.IsDir() {
-		files, err = discover(cfg.inPath)
-		if err != nil {
-			return fmt.Errorf("walk input dir: %w", err)
-		}
-	} else if strings.EqualFold(filepath.Ext(cfg.inPath), ".zip") {
-		zr, zerr := zip.OpenReader(cfg.inPath)
-		if zerr != nil {
-			return fmt.Errorf("open input zip %q: %w", cfg.inPath, zerr)
-		}
-		defer zr.Close()
-		files = discoverZipEntries(zr.File)
-	} else {
-		return fmt.Errorf("input path %q is neither a directory nor a .zip file", cfg.inPath)
+func build(cfg config, rep reporter) error {
+	start := time.Now()
+	outAbs, err := filepath.Abs(cfg.Out)
+	if err != nil {
+		return err
 	}
+	files, inputBytes, closeInput, err := openInput(cfg.inPath, outAbs)
+	if err != nil {
+		return err
+	}
+	defer closeInput()
 	if len(files) == 0 {
 		return fmt.Errorf("no files found under %q", cfg.inPath)
 	}
 
-	// Live progress bar drawn on stderr while files are optimized. Auto-detects
-	// whether stderr is a TTY (so output captured to a file or piped through a
-	// tool stays clean). Suppressed by -q, -v, -dry-run or -no-progress.
-	showBar := !cfg.quiet && !cfg.verbose && !cfg.dryRun && !cfg.noProgress && term.IsTerminal(int(os.Stderr.Fd()))
-	var bar *progressbar.ProgressBar
-	if showBar {
-		bar = progressbar.NewOptions(len(files),
-			progressbar.OptionSetDescription("Optimizing pack"),
-			progressbar.OptionSetWriter(os.Stderr),
-			progressbar.OptionShowCount(),
-			progressbar.OptionShowIts(),
-			progressbar.OptionSetItsString("files"),
-			progressbar.OptionSetWidth(40),
-			progressbar.OptionThrottle(60*time.Millisecond),
-			progressbar.OptionOnCompletion(func() { fmt.Fprintln(os.Stderr) }),
-			progressbar.OptionShowDescriptionAtLineEnd(),
-		)
+	// Create the output before the long part, so an unwritable folder fails
+	// at once. It is a temp file in the destination's directory, renamed into
+	// place at the end (atomic, never crosses filesystems).
+	var out *os.File
+	if !cfg.DryRun {
+		removeStale(filepath.Dir(outAbs))
+		out, err = os.CreateTemp(filepath.Dir(outAbs), tempPrefix()+"*.zip.tmp")
+		if err != nil {
+			return fmt.Errorf("create output: %w", err)
+		}
+		tmp := out.Name()
+		onInterrupt(func() { _ = os.Remove(tmp) })
+		defer func() {
+			if out != nil {
+				_ = out.Close()
+				_ = os.Remove(tmp)
+			}
+		}()
 	}
 
-	// Optimize every file concurrently into a per-file in-memory buffer.
-	// Peak memory equals the sum of all optimized file sizes (which is
-	// always <= the sum of all original file sizes). For packs so huge that
-	// this becomes a problem we'd spill to disk-backed buffers; in practice
-	// packs rarely exceed a few hundred MB and a Go process can easily hold
-	// that on a 64-bit machine.
-	type rresult struct {
-		buildResult
-		err error
+	rep.start(len(files))
+	entries, err := optimizeAll(cfg, files, rep)
+	if err != nil {
+		return err
 	}
-	jobs := make(chan fileSpec)
-	resultsCh := make(chan rresult, len(files))
-	var wg sync.WaitGroup
-	for w := 0; w < cfg.threads; w++ {
-		wg.Add(1)
+	optim.Cleanup()
+
+	s := summary{Files: len(entries), InputBytes: inputBytes}
+	for _, e := range entries {
+		if e.changed {
+			s.Optimized++
+		}
+		rep.file(e)
+	}
+	for _, e := range entries {
+		if e.note != "" {
+			s.Notes++
+			rep.note(e.rel, e.note)
+		}
+	}
+
+	if cfg.DryRun {
+		s.OutputBytes, s.DedupBytes, err = writeZip(io.Discard, entries, cfg.Zip.LocalNames)
+		if err != nil {
+			return err
+		}
+	} else {
+		h := sha1.New()
+		s.OutputBytes, s.DedupBytes, err = writeZip(io.MultiWriter(out, h), entries, cfg.Zip.LocalNames)
+		if err == nil {
+			err = out.Chmod(0o644) // CreateTemp makes it private; a pack is meant to be served
+		}
+		if err == nil {
+			err = out.Close()
+		}
+		if err == nil {
+			err = os.Rename(out.Name(), outAbs)
+		}
+		if err != nil {
+			return fmt.Errorf("write zip: %w", err)
+		}
+		out = nil
+		s.Out = outAbs
+		s.SHA1 = hex.EncodeToString(h.Sum(nil))
+	}
+	s.Millis = time.Since(start).Milliseconds()
+	rep.done(s)
+	return nil
+}
+
+// optimizeAll optimizes and compresses every file on cfg.Threads workers and
+// returns the entries in path order.
+func optimizeAll(cfg config, files []fileSpec, rep reporter) ([]entry, error) {
+	var cache *resultCache
+	if cfg.Cache != "" {
+		var err error
+		if cache, err = openCache(cfg.Cache, cfg.Options); err != nil {
+			return nil, fmt.Errorf("open cache: %w", err)
+		}
+	}
+
+	// Largest files first, so a big texture or song never starts last and
+	// runs alone while the other workers sit idle.
+	order := make([]int, len(files))
+	for i := range order {
+		order[i] = i
+	}
+	sort.SliceStable(order, func(a, b int) bool { return files[order[a]].size > files[order[b]].size })
+
+	entries := make([]entry, len(files))
+	errs := make([]error, len(files))
+	jobs := make(chan int)
+	done := make(chan int, len(files))
+	for w := 0; w < cfg.Threads; w++ {
 		go func() {
-			defer wg.Done()
-			for f := range jobs {
-				data, err := f.read()
-				if err != nil {
-					resultsCh <- rresult{buildResult: buildResult{rel: f.rel, orig: f.size}, err: err}
-					continue
-				}
-				r, oerr := optim.Optimize(f.rel, data, cfg.Options)
-				m := r.Method
-				if m == 0 {
-					m = zip.Deflate
-				}
-				resultsCh <- rresult{
-					buildResult: buildResult{
-						rel:     f.rel,
-						orig:    int64(len(data)),
-						new:     int64(len(r.Data)),
-						method:  m,
-						changed: r.Changed,
-						data:    r.Data,
-						note:    r.Note,
-					},
-					err: oerr,
-				}
+			c := newCompressor()
+			for i := range jobs {
+				entries[i], errs[i] = process(files[i], cfg.Options, cache, c)
+				done <- i
 			}
 		}()
 	}
 	go func() {
-		for _, f := range files {
-			jobs <- f
+		for _, i := range order {
+			jobs <- i
 		}
 		close(jobs)
 	}()
-	collected := make([]buildResult, 0, len(files))
-	var firstErr error
-	for i := 0; i < len(files); i++ {
-		r := <-resultsCh
-		if r.err != nil && firstErr == nil {
-			firstErr = r.err
-		}
-		collected = append(collected, r.buildResult)
-		if bar != nil {
-			// Show the current file's optimizer type so the user can see at a
-			// glance which task the worker pool is busy on right now.
-			bar.Describe(fmt.Sprintf("%s %s", fileKind(r.rel), trimPath(r.rel)))
-			bar.Add(1)
+	for n := 1; n <= len(files); n++ {
+		i := <-done
+		rep.progress(n, len(files), files[i].rel)
+	}
+	for i, err := range errs {
+		if err != nil {
+			return nil, fmt.Errorf("optimizing %s: %w", files[i].rel, err)
 		}
 	}
-	wg.Wait()
-	if bar != nil {
-		_ = bar.Finish()
-	}
-	if firstErr != nil {
-		return fmt.Errorf("optimizing files: %w", firstErr)
-	}
-	sort.Slice(collected, func(i, j int) bool { return collected[i].rel < collected[j].rel })
-
-	// Statistics + log.
-	var origTotal, newTotal int64
-	var counts, changedFiles int
-	var notes []string
-	for _, r := range collected {
-		origTotal += r.orig
-		newTotal += r.new
-		counts++
-		if r.changed {
-			changedFiles++
-		}
-		if r.note != "" {
-			notes = append(notes, fmt.Sprintf("  %s: %s", r.rel, r.note))
-		}
-		if bar != nil {
-			continue // the bar already shows progress; skip noisy per-file log
-		}
-		if cfg.verbose || (!cfg.quiet && r.changed) {
-			sign := "="
-			delta := r.orig - r.new
-			if r.new < r.orig {
-				sign = "-"
-			} else if r.new > r.orig {
-				sign = "+"
-				delta = -delta
-			}
-			if cfg.verbose || sign == "-" {
-				log.Printf("%-60s %s%s  (%d -> %d)", r.rel, sign, humanBytes(delta), r.orig, r.new)
-			}
-		}
-	}
-	for _, n := range notes {
-		log.Println("note:", n)
-	}
-
-	if cfg.dryRun {
-		log.Printf("dry run: %d files, would write %s", counts, cfg.outZip)
-		return nil
-	}
-
-	if bar != nil {
-		bar.Describe("Writing " + cfg.outZip)
-	}
-	tmp, dedupSaved, err := writeZip(collected, cfg.outZip)
-	if err != nil {
-		return fmt.Errorf("write zip: %w", err)
-	}
-	if err := os.Rename(tmp, cfg.outZip); err != nil {
-		_ = os.Remove(tmp)
-		return fmt.Errorf("rename tmp zip: %w", err)
-	}
-
-	red := 0.0
-	if origTotal > 0 {
-		red = float64(origTotal-newTotal) / float64(origTotal) * 100
-	}
-	doneMsg := fmt.Sprintf("done: %d files, %d optimized, %s -> %s (%.1f%% smaller)", counts, changedFiles, humanBytes(origTotal), humanBytes(newTotal), red)
-	if dedupSaved > 0 {
-		doneMsg += fmt.Sprintf(", %s deduped", humanBytes(dedupSaved))
-	}
-	if bar != nil {
-		doneMsg += " in " + time.Since(start).Round(time.Millisecond).String()
-	}
-	log.Print(doneMsg)
-	return nil
+	return entries, nil
 }
 
-// writeZip writes the pre-optimized bytes into a temporary ZIP file placed in
-// the same directory as the destination, so the eventual rename(2) is atomic
-// and does not cross filesystem boundaries. The output uses PackSquash's
-// `disregard` conformance level: dummy timestamps, no data descriptors, no
-// extra fields and deduplication of identical files. On success it returns the
-// temp file path to rename into place plus the bytes saved by deduplication
-// (so the caller can mention it in its summary log). On error, any temp file is
-// removed before returning.
-func writeZip(results []buildResult, outZip string) (string, int64, error) {
-	return writeZipDisregard(results, outZip)
+// process reads, optimizes and compresses one file.
+func process(f fileSpec, opts optim.Options, cache *resultCache, c *compressor) (entry, error) {
+	data, err := f.read()
+	if err != nil {
+		return entry{}, err
+	}
+	spec := optim.Lookup(f.rel)
+	var r optim.Result
+	if cache != nil && spec.Slow {
+		r, err = cache.optimize(spec, f.rel, data, opts)
+	} else {
+		r, err = spec.Optimize(f.rel, data, opts)
+	}
+	if err != nil {
+		return entry{}, err
+	}
+	e := entry{
+		rel:     f.rel,
+		orig:    int64(len(data)),
+		size:    int64(len(r.Data)),
+		changed: r.Changed,
+		note:    r.Note,
+		crc:     crc32.ChecksumIEEE(r.Data),
+	}
+	e.method, e.payload = c.pack(r.Data, r.Method)
+	return e, nil
+}
+
+// compressor deflates one worker's entries, reusing its flate state: setting
+// one up costs more than compressing a typical pack JSON.
+type compressor struct {
+	buf bytes.Buffer
+	w   *flate.Writer
+}
+
+func newCompressor() *compressor {
+	c := &compressor{}
+	c.w, _ = flate.NewWriter(&c.buf, flate.BestCompression)
+	return c
+}
+
+// pack returns how data is stored in the ZIP: deflated when the optimizer
+// asked for it and that is actually smaller, as it is otherwise. The writer
+// is deterministic, so identical files get identical payloads (deduplicated
+// by the ZIP writer).
+func (c *compressor) pack(data []byte, method uint16) (uint16, []byte) {
+	if method != zip.Deflate || len(data) == 0 {
+		return zip.Store, data
+	}
+	c.buf.Reset()
+	c.w.Reset(&c.buf)
+	_, _ = c.w.Write(data)
+	_ = c.w.Close()
+	if c.buf.Len() >= len(data) {
+		return zip.Store, data
+	}
+	return zip.Deflate, bytes.Clone(c.buf.Bytes())
+}
+
+// openInput lists the input's files (a directory or a .zip archive), its size
+// on disk and a function releasing it. outAbs is left out of a directory
+// input, so a previous output inside the pack is not packed again.
+func openInput(path, outAbs string) (files []fileSpec, size int64, closeFn func(), err error) {
+	info, err := os.Stat(path)
+	if err != nil {
+		return nil, 0, nil, fmt.Errorf("stat input: %w", err)
+	}
+	if info.IsDir() {
+		files, err = discover(path, outAbs)
+		if err != nil {
+			return nil, 0, nil, fmt.Errorf("walk input dir: %w", err)
+		}
+		for _, f := range files {
+			size += f.size
+		}
+		return files, size, func() {}, nil
+	}
+	if !strings.EqualFold(filepath.Ext(path), ".zip") {
+		return nil, 0, nil, fmt.Errorf("input path %q is neither a directory nor a .zip file", path)
+	}
+	zr, err := zip.OpenReader(path)
+	if err != nil {
+		return nil, 0, nil, fmt.Errorf("open input zip %q: %w", path, err)
+	}
+	return discoverZipEntries(zr.File), info.Size(), func() { _ = zr.Close() }, nil
 }
 
 // discover returns the sorted list of regular files under root, with rel
-// paths using forward slashes. Top-level hidden directories (starting with '.')
-// are skipped so transient editor state (.git, .vscode, .idea) is not bundled.
-func discover(root string) ([]fileSpec, error) {
+// paths using forward slashes. Hidden directories (starting with '.') are
+// skipped so transient editor state (.git, .vscode, .idea) is not bundled.
+func discover(root, skip string) ([]fileSpec, error) {
 	var out []fileSpec
 	rootAbs, err := filepath.Abs(root)
 	if err != nil {
@@ -608,7 +594,7 @@ func discover(root string) ([]fileSpec, error) {
 			}
 			return nil
 		}
-		if !d.Type().IsRegular() {
+		if !d.Type().IsRegular() || path == skip {
 			return nil
 		}
 		info, err := d.Info()
@@ -628,29 +614,23 @@ func discover(root string) ([]fileSpec, error) {
 	return out, nil
 }
 
-// discoverZipEntries turns a ZIP archive's entries into fileSpecs. The file
-// bytes are read lazily through the archive: Go's archive/zip reader shares a
-// single backing file handle across entries, so concurrent Open calls would
-// interleave seeks and corrupt reads. A mutex serializes the Open+ReadAll
-// calls (the heavy optimization work still runs concurrently afterwards).
-// Directory entries and non-regular files are skipped; leading "./" prefixes
-// are stripped so rel paths match what discover would produce for a folder.
+// discoverZipEntries turns a ZIP archive's entries into fileSpecs whose bytes
+// are read lazily through the archive (archive/zip reads entries concurrently
+// through ReadAt). Directory entries and non-regular files are skipped;
+// leading "./" prefixes are stripped so rel paths match what discover would
+// produce for a folder.
 func discoverZipEntries(entries []*zip.File) []fileSpec {
-	var mu sync.Mutex
 	out := make([]fileSpec, 0, len(entries))
 	for _, f := range entries {
 		fi := f.FileInfo()
 		if fi.IsDir() || !fi.Mode().IsRegular() {
 			continue
 		}
-		name := strings.TrimPrefix(filepath.ToSlash(f.Name), "./")
 		entry := f
 		out = append(out, fileSpec{
-			rel:  name,
+			rel:  strings.TrimPrefix(filepath.ToSlash(f.Name), "./"),
 			size: int64(f.UncompressedSize64),
 			read: func() ([]byte, error) {
-				mu.Lock()
-				defer mu.Unlock()
 				rc, err := entry.Open()
 				if err != nil {
 					return nil, err
@@ -662,65 +642,6 @@ func discoverZipEntries(entries []*zip.File) []fileSpec {
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].rel < out[j].rel })
 	return out
-}
-// looks like a positional rather than a flag value) to the end of the slice
-// so that the stdlib flag package, which stops at the first non-flag, can
-// still parse everything. We are conservative: a token is treated as a flag
-// only if it starts with '-' (and isn't "-") or "--"; everything else is a
-// positional. Boolean flags never consume the next token.
-func reorderArgs(args []string) []string {
-	var flags, positional []string
-	i := 0
-	for i < len(args) {
-		a := args[i]
-		if a == "-" {
-			positional = append(positional, a)
-			i++
-			continue
-		}
-		if strings.HasPrefix(a, "-") {
-			flags = append(flags, a)
-			// Boolean flags are defined with fs.Bool / fs.BoolVar; the
-			// flag package treats unknown bool flags as taking an explicit
-			// "=value" only. Non-bool flags (String / Int / Float64) need
-			// the next token *unless* it is itself a flag or there is none.
-			// Since we cannot know the flag types ahead of time here, we
-			// use a simple heuristic: if the next token does not start
-			// with '-', attach it as the flag value.
-			// Exception: '-h'/'--help'/'-h=true' style need no value.
-			if !strings.Contains(a, "=") && i+1 < len(args) && !strings.HasPrefix(args[i+1], "-") {
-				// Heuristic: only consume next arg if this flag is one of
-				// the known value-flags. Otherwise it's likely a boolean.
-				if takesValue(a) {
-					flags = append(flags, args[i+1])
-					i += 2
-					continue
-				}
-			}
-			i++
-			continue
-		}
-		positional = append(positional, a)
-		i++
-	}
-	return append(flags, positional...)
-}
-
-// takesValue reports whether the given flag token (e.g. "-out" or "--out")
-// expects a separate value argument. Boolean flags do not. The set below must
-// mirror the flag declarations in run().
-func takesValue(flag string) bool {
-	name := strings.TrimLeft(flag, "-")
-	// Strip "=value" suffix if present.
-	if i := strings.IndexByte(name, '='); i >= 0 {
-		name = name[:i]
-	}
-	switch name {
-	case "out", "config", "threads", "png-level", "png-quant-min", "png-quant-max":
-		return true
-	default:
-		return false
-	}
 }
 
 func humanBytes(n int64) string {
@@ -740,39 +661,4 @@ func humanBytes(n int64) string {
 	default:
 		return fmt.Sprintf("%d B", n)
 	}
-}
-
-// fileKind returns a short uppercase tag identifying which optimizer handles
-// the file, or "PASS" when the file is passed through untouched. The tag is
-// shown next to the progress bar so the user can see the current task at a
-// glance.
-func fileKind(rel string) string {
-	ext := strings.ToLower(filepath.Ext(rel))
-	switch ext {
-	case ".png", ".apng":
-		return "PNG"
-	case ".ogg", ".oga":
-		return "OGG"
-	case ".json", ".jsonc", ".mcmeta", ".mcmetac":
-		return "JSON"
-	case ".vsh", ".fsh", ".glsl":
-		return "GLSL"
-	case ".lang":
-		return "LANG"
-	case ".properties":
-		return "PROP"
-	default:
-		return "PASS"
-	}
-}
-
-// trimPath shortens a long relative path so the progress-bar description stays
-// on a single terminal line; keeps the trailing portion (which usually
-// identifies the asset) and prefixes an ellipsis when truncated.
-func trimPath(rel string) string {
-	const max = 48
-	if len(rel) <= max {
-		return rel
-	}
-	return "..." + rel[len(rel)-(max-3):]
 }

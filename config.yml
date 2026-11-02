@@ -12,6 +12,12 @@ quiet: false             # -q
 verbose: false           # -v
 dry_run: false           # -dry-run
 no_progress: false       # -no-progress
+events: false            # -events (progress + summary as JSON lines on stdout)
+cache: ""                # -cache (folder keeping PNG/OGG results; off when empty)
+
+# the output ZIP
+zip:
+  local_names: false     # -zip-local-names (bigger; needed by 7-Zip, not by Minecraft)
 
 # JSON / JSONC / .mcmeta minification
 json:
@@ -19,7 +25,7 @@ json:
 
 # PNG optimization (oxipng lossless + optional pngquant lossy palette pass)
 png:
-  recompress: true              # -png-recompress / -skip-png
+  recompress: true              # -png-recompress (-skip-png turns every PNG step off)
   strip_meta: true              # -png-strip-meta
   level: 0                      # -png-level (0 = preset 4, 1-6 presets, >6 = max)
   keep_color_profile: false     # -png-keep-color-profile (keep gAMA/iCCP/cHRM/sRGB)
@@ -32,6 +38,8 @@ png:
 ogg:
   optimize: true                # -ogg / -skip-ogg
   strip_comments: true          # -ogg-strip-comments
+  lossy: false                  # -ogg-lossy (re-encode first, kept when >= 15% smaller; lossy)
+  quality: 4                    # -ogg-quality (Vorbis 0-10, for -ogg-lossy)
 
 # shader / lang / properties minification
 text:

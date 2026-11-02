@@ -6,10 +6,12 @@ import (
 	"encoding/binary"
 	"errors"
 	"hash/crc32"
+	"image"
 	"image/png"
 	"io"
 	"os/exec"
 	"strconv"
+	"strings"
 )
 
 var pngSignature = []byte{0x89, 'P', 'N', 'G', 0x0d, 0x0a, 0x1a, 0x0a}
@@ -23,7 +25,7 @@ var pngCRC = crc32.MakeTable(crc32.IEEE)
 //
 //  1. (optional) pngquant: lossily remap RGB/RGBA (color-type 2/6) PNGs to an
 //     8-bit palette when the result still meets the configured quality range.
-//     This step performs that lossless-only tools (oxipng) cannot, and
+//     This step performs what lossless-only tools (oxipng) cannot, and
 //     it is what collapses photographic assets such as panoramas
 //     to ~25% of their lossless size.
 //  2. oxipng: 100% lossless recompression of the (possibly paletted) IDAT,
@@ -37,198 +39,156 @@ var pngCRC = crc32.MakeTable(crc32.IEEE)
 // is silently skipped (the build still succeeds). On windows/arm64 none of
 // the binaries are embedded, so PNGs pass through untouched entirely.
 func optimizePNG(path string, data []byte, opts Options) (Result, error) {
-	if !opts.PNGRecompress && !opts.PNGStripMeta && !opts.PNGLossyQuant {
-		return Result{Data: data, Method: zip.Deflate}, nil
+	out, note := tryOptimizePNG(data, opts.PNG)
+	if out == nil {
+		return Result{Data: data, Method: zip.Deflate, Note: note}, nil
 	}
-	out, ok, err := tryOptimizePNG(data, opts)
-	if err != nil {
-		return Result{Data: data, Method: zip.Deflate, Note: "png optimize failed: " + err.Error()}, nil
-	}
-	if !ok {
-		return Result{Data: data, Method: zip.Deflate}, nil
-	}
-	return Result{Data: out, Method: zip.Store, Changed: len(out) != len(data)}, nil
+	return Result{Data: out, Method: zip.Store, Changed: true, Note: note}, nil
 }
 
-// tryOptimizePNG is the inner entry-point kept as a separate function so the
-// png_test.go unit tests can exercise it directly without going through the
-// optimizer registry. ok=false means "pass through unchanged": either no
-// embedded binary exists for this platform, the input was not a valid PNG, the
-// file is an APNG, oxipng failed, or oxipng produced output that was not
-// smaller than the original.
-func tryOptimizePNG(data []byte, opts Options) ([]byte, bool, error) {
-	if !opts.PNGRecompress && !opts.PNGStripMeta && !opts.PNGLossyQuant {
-		return nil, false, nil
+// tryOptimizePNG returns the smallest of the original, the quantized and the
+// oxipng outputs, or nil when nothing beat the original: the input was not a
+// valid PNG, the file is an APNG, every step is disabled or failed, or no
+// embedded binary exists for this platform. note explains a tool failure.
+func tryOptimizePNG(data []byte, opts PNGOptions) (out []byte, note string) {
+	if !opts.Recompress && !opts.StripMeta && !opts.Lossy {
+		return nil, ""
 	}
-	if len(data) < len(pngSignature) || !bytes.HasPrefix(data, pngSignature) {
-		return nil, false, nil
-	}
-	if isAPNG(data) {
-		return nil, false, nil
+	if !bytes.HasPrefix(data, pngSignature) || isAPNG(data) {
+		return nil, ""
 	}
 
-	// Stage 1 (optional, lossy): pngquant → 8-bit palette. We only attempt
-	// quantization when the user opted in AND the source PNG is in a color
-	// space that benefits from it (true-color RGB or RGBA, i.e. PNG color
-	// type 2 or 6). Already-paletted (type 3) and grayscale (type 0/4)
-	// images are skipped: pngquant would just re-emit them, wasting a
-	// process spawn per file.
-	quantized, qnote, qok := data, "", false
-	if opts.PNGLossyQuant {
-		if q, note, ok, err := quantizePNG(data, opts); err == nil {
-			quantized, qnote, qok = q, note, ok
-		} else if !errors.Is(err, ErrBinNotFound) {
-			// A genuine pngquant failure (not just "binary missing on this
-			// platform") is noted but never aborts the build; we fall back
-			// to the unquantized input below.
-			qnote = "pngquant failed: " + err.Error()
+	// Stage 1 (optional, lossy): pngquant → 8-bit palette. A failure (not
+	// just "binary missing on this platform") is noted but never aborts the
+	// build; the unquantized input carries on to oxipng.
+	best := data
+	if opts.Lossy {
+		q, err := quantizePNG(data, opts)
+		if err != nil && !errors.Is(err, ErrBinNotFound) {
+			note = "pngquant failed: " + err.Error()
+		}
+		if q != nil && len(q) < len(best) {
+			best = q
 		}
 	}
 
 	// Stage 2 (lossless): oxipng strips ancillary chunks and recompresses
-	// the IDAT of either the paletted output (when quantization helped) or
-	// the original PNG. If both oxipng is disabled (the user asked for
-	// lossy-only via -png-lossy -skip-png) we still want to honor the
-	// quantization result.
-	if !opts.PNGRecompress && !opts.PNGStripMeta {
-		if qok && len(quantized) > 0 && len(quantized) < len(data) {
-			return quantized, true, nil
+	// the IDAT of whichever input is smallest so far.
+	if opts.Recompress || opts.StripMeta {
+		o, err := runOxipng(best, opts)
+		if err != nil && !errors.Is(err, ErrBinNotFound) {
+			note = "oxipng failed: " + err.Error()
 		}
-		if qnote != "" {
-			return nil, false, nil
+		if len(o) > 0 && len(o) < len(best) {
+			best = o
 		}
-		return nil, false, nil
 	}
+	if len(best) >= len(data) {
+		return nil, note
+	}
+	return best, note
+}
 
+// runOxipng losslessly recompresses a PNG with the embedded oxipng.
+func runOxipng(data []byte, opts PNGOptions) ([]byte, error) {
 	bin, err := extractBin("oxipng")
 	if err != nil {
-		if errors.Is(err, ErrBinNotFound) {
-			// No oxipng for this platform. If quantization did produce a
-			// smaller paletted PNG, still return it so the user gets the
-			// benefit of the lossy pass.
-			if qok && len(quantized) > 0 && len(quantized) < len(data) {
-				return quantized, true, nil
-			}
-			return nil, false, nil
-		}
-		return nil, false, err
+		return nil, err
 	}
-
-	args := []string{"-o", oxipngLevel(opts.PNGLevel)}
-	if opts.PNGStripMeta {
-		if opts.PNGKeepColorMng {
+	// One thread per oxipng: compack already runs one file per CPU.
+	args := []string{"-o", oxipngLevel(opts.Level), "-t", "1"}
+	if opts.StripMeta {
+		if opts.KeepColorProfile {
 			// -s = --strip safe: keep cICP/iCCP/sRGB/pHYs/acTL/fcTL/fdAT.
 			args = append(args, "-s")
 		} else {
-			// Strip every non-critical chunk (matches the previous behaviour
-			// of dropping everything that isn't IHDR/PLTE/tRNS/IEND).
+			// Strip every non-critical chunk (keeps IHDR/PLTE/tRNS/IEND).
 			args = append(args, "--strip", "all")
 		}
 	}
 	args = append(args, "--stdout", "-")
-
-	cmd := exec.Command(bin, args...)
-	cmd.Stdin = bytes.NewReader(quantized)
-	var out, errb bytes.Buffer
-	cmd.Stdout = &out
-	cmd.Stderr = &errb
-	if err := cmd.Run(); err != nil {
-		// oxipng exited non-zero: malformed or unsupported PNG, pass through
-		// without surfacing an error so one bad file doesn't fail the build.
-		// But if pngquant gave us a smaller paletted input, prefer that.
-		if qok && len(quantized) > 0 && len(quantized) < len(data) {
-			return quantized, true, nil
-		}
-		_ = errb
-		return nil, false, nil
-	}
-	result := out.Bytes()
-	if len(result) == 0 {
-		if qok && len(quantized) > 0 && len(quantized) < len(data) {
-			return quantized, true, nil
-		}
-		return nil, false, nil
-	}
-	// Compare against the *original* (pre-quantization) size so the
-	// quantization step gets credit for the savings.
-	if len(result) >= len(data) {
-		// Final result isn't smaller than the original. If quantization
-		// alone already beat the original, ship that — otherwise skip.
-		if qok && len(quantized) > 0 && len(quantized) < len(data) {
-			return quantized, true, nil
-		}
-		return nil, false, nil
-	}
-	return result, true, nil
+	return runTool(bin, args, data)
 }
 
 // quantizePNG runs the embedded pngquant binary (built on libimagequant) to
-// lossily remap an RGB/RGBA PNG to an 8-bit palette.
-//
-// ok=true means quantization succeeded and produced a smaller PNG: out should
-// be used in place of the original. ok=false means the result was not smaller
-// (or was below --quality min, or pngquant isn't embedded for this platform
-// via ErrBinNotFound, or the source is already palette/grayscale): the caller
-// should keep the original bytes.
-//
-// pngquant's --quality min-max: when the achievable quality would drop below
-// min, pngquant exits 99 and writes the 24-bit original to stdout. We detect
-// that case and return ok=false so the caller falls back to lossless oxipng
-// of the original.
-func quantizePNG(data []byte, opts Options) (out []byte, note string, ok bool, err error) {
+// lossily remap an RGB/RGBA PNG to an 8-bit palette. It returns nil (keep the
+// original) when the source is already palette/grayscale, uses its alpha
+// channel while ProtectAlpha is set, or pngquant could not reach the minimum
+// quality (exit 99) or a smaller file.
+func quantizePNG(data []byte, opts PNGOptions) ([]byte, error) {
 	colorType, err := pngColorType(data)
 	if err != nil {
-		return data, "", false, nil
+		return nil, nil
 	}
-	// 0 = gray, 3 = palette. Skip — pngquant wouldn't improve them in a
-	// way worth the process spawn cost.
+	// 0 = gray, 3 = palette, 4 = gray+alpha. Skip — pngquant wouldn't
+	// improve them in a way worth the process spawn cost.
 	if colorType == 0 || colorType == 3 || colorType == 4 {
-		return data, "", false, nil
+		return nil, nil
 	}
 
-	// Alpha-channel guard. Skipped for non-RGBA color types: only color-type
-	// 6 (RGBA) carries an alpha channel that pngquant could mangle, and
-	// pre-scanning type 2 (RGB) wastes a decode. Fully-opaque RGBA images
-	// (every alpha == 255) are NOT matched here, so they keep benefiting
-	// from the lossy palette pass.
-	if colorType == 6 && opts.PNGProtectAlpha {
-		if uses, _ := usesAlphaChannel(data); uses {
-			return data, "alpha preserved (skip pngquant)", false, nil
-		}
+	// Alpha-channel guard. Only color-type 6 (RGBA) carries an alpha channel
+	// that pngquant could mangle. Fully-opaque RGBA images (every alpha ==
+	// 255) are NOT matched here, so they keep benefiting from the lossy pass.
+	if colorType == 6 && opts.ProtectAlpha && usesAlphaChannel(data) {
+		return nil, nil
 	}
 
 	bin, err := extractBin("pngquant")
 	if err != nil {
-		return data, "", false, err
+		return nil, err
 	}
+	args := []string{"--skip-if-larger", "--strip"}
+	if q := pngQuantRange(opts.QuantMin, opts.QuantMax); q != "" {
+		args = append(args, "--quality="+q)
+	}
+	out, err := runTool(bin, append(args, "-"), data)
+	// Exit code 99 = quality below the requested minimum, 98 = not smaller
+	// (--skip-if-larger): pngquant's contract is "image won't be saved".
+	var ee *exec.ExitError
+	if errors.As(err, &ee) && (ee.ExitCode() == 98 || ee.ExitCode() == 99) {
+		return nil, nil
+	}
+	if err != nil || len(out) == 0 || len(out) >= len(data) {
+		return nil, err
+	}
+	return out, nil
+}
 
-	args := []string{
-		"--quality=" + pngQuantRange(opts.PNGQuantMin, opts.PNGQuantMax),
-		"--skip-if-larger",
-		"--strip",
-		"-",
-	}
+// runTool pipes data through an external tool and returns its stdout. A
+// non-zero exit is an error carrying the first line of stderr.
+func runTool(bin string, args []string, data []byte) ([]byte, error) {
 	cmd := exec.Command(bin, args...)
 	cmd.Stdin = bytes.NewReader(data)
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
-	if err := cmd.Run(); err != nil {
-		// Exit code 99 = quality below the requested minimum; pngquant's
-		// contract is "image won't be saved", and it writes the original
-		// 24-bit pixels to stdout. We treat this as "skip quantization".
-		if ee, _ := err.(*exec.ExitError); ee != nil && ee.ExitCode() == 99 {
-			return data, "", false, nil
+	if err := runCmd(cmd); err != nil {
+		if line := firstLine(stderr.String()); line != "" {
+			return nil, &toolError{err: err, msg: line}
 		}
-		// Any other non-zero exit: pass through unchanged (with a note
-		// surfaced via the empty stderr, which we ignore here).
-		return data, "pngquant exit " + err.Error(), false, nil
+		return nil, err
 	}
-	result := stdout.Bytes()
-	if len(result) == 0 || len(result) >= len(data) {
-		return data, "", false, nil
+	return stdout.Bytes(), nil
+}
+
+// toolError keeps the exit status (errors.As finds the *exec.ExitError) while
+// reading as the tool's own message.
+type toolError struct {
+	err error
+	msg string
+}
+
+func (e *toolError) Error() string { return e.msg }
+func (e *toolError) Unwrap() error { return e.err }
+
+// firstLine returns the first non-blank line of s, trimmed.
+func firstLine(s string) string {
+	for _, line := range strings.Split(s, "\n") {
+		if line = strings.TrimSpace(line); line != "" {
+			return line
+		}
 	}
-	return result, "", true, nil
+	return ""
 }
 
 // oxipngLevel maps the user-facing PNGLevel option to a valid oxipng -o
@@ -339,21 +299,48 @@ func readU32(r io.Reader) (uint32, error) {
 // endpoints that pngquant preserves losslessly. So a typical hard-edged
 // cutout (e.g. an icon with a transparent background and an opaque subject)
 // still gets to benefit from the lossy palette pass. On any decode error
-// it returns (false, nil) so pngquant still gets a chance to decide what
-// to do with the file.
-func usesAlphaChannel(data []byte) (bool, error) {
+// it returns false so pngquant still gets a chance to decide what to do with
+// the file.
+func usesAlphaChannel(data []byte) bool {
 	img, err := png.Decode(bytes.NewReader(data))
 	if err != nil {
-		return false, nil
+		return false
+	}
+	// Color-type 6 decodes to NRGBA (8-bit) or NRGBA64 (16-bit): scan the
+	// alpha bytes directly instead of boxing every pixel through At().
+	switch img := img.(type) {
+	case *image.NRGBA:
+		for i := 3; i < len(img.Pix); i += 4 {
+			if a := img.Pix[i]; a != 0 && a != 0xff {
+				return true
+			}
+		}
+		return false
+	case *image.NRGBA64:
+		for i := 6; i < len(img.Pix); i += 8 {
+			a := uint16(img.Pix[i])<<8 | uint16(img.Pix[i+1])
+			if a != 0 && a != 0xffff {
+				return true
+			}
+		}
+		return false
 	}
 	b := img.Bounds()
 	for y := b.Min.Y; y < b.Max.Y; y++ {
 		for x := b.Min.X; x < b.Max.X; x++ {
 			_, _, _, a := img.At(x, y).RGBA()
 			if a != 0 && a != 0xffff {
-				return true, nil
+				return true
 			}
 		}
 	}
-	return false, nil
+	return false
+}
+
+// toolMessage is the first line of a failed tool's stderr, or its exit error.
+func toolMessage(stderr string, err error) string {
+	if line := firstLine(stderr); line != "" {
+		return line
+	}
+	return err.Error()
 }

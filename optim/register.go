@@ -4,10 +4,10 @@ package optim
 // lower-cased extension. Keeping this central makes adding new optimizers a
 // one-liner.
 func init() {
-	Register(optimizeJSON, "json", "jsonc", "mcmeta", "mcmetac")
-	Register(optimizePNG, "png")
-	Register(optimizeOGG, "ogg", "oga")
-	Register(optimizeShader, "vsh", "fsh", "glsl")
-	Register(optimizeLang, "lang")
-	Register(optimizeProperties, "properties")
+	Register(Spec{Kind: "JSON", Optimize: optimizeJSON}, "json", "jsonc", "mcmeta", "mcmetac")
+	Register(Spec{Kind: "PNG", Slow: true, Optimize: optimizePNG}, "png")
+	Register(Spec{Kind: "OGG", Slow: true, Optimize: optimizeOGG}, "ogg", "oga")
+	Register(Spec{Kind: "GLSL", Optimize: optimizeShader}, "vsh", "fsh", "glsl")
+	Register(Spec{Kind: "LANG", Optimize: optimizeLang}, "lang")
+	Register(Spec{Kind: "PROP", Optimize: optimizeProperties}, "properties")
 }

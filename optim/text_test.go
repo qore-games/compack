@@ -67,7 +67,7 @@ func TestMinifyGLSL(t *testing.T) {
 
 func TestOptimizeLangEnd2End(t *testing.T) {
 	in := []byte("# comment\na=1\n\nno_separator\nb=2\n")
-	res, err := optimizeLang("en_us.lang", in, Options{TextMinify: true})
+	res, err := optimizeLang("en_us.lang", in, Options{Text: TextOptions{Minify: true}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -81,7 +81,7 @@ func TestOptimizeLangEnd2End(t *testing.T) {
 
 func TestOptimizeShaderEnd2End(t *testing.T) {
 	in := []byte("// vertex shader\n#version 120\nvoid main(){\n  gl_Position=vec4(1.0);\n}\n")
-	res, err := optimizeShader("foo.vsh", in, Options{TextMinify: true})
+	res, err := optimizeShader("foo.vsh", in, Options{Text: TextOptions{Minify: true}})
 	if err != nil {
 		t.Fatal(err)
 	}

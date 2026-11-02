@@ -58,12 +58,9 @@ func chunkBytes(name, body []byte) []byte {
 
 func TestOptimizePNGRoundtrip(t *testing.T) {
 	in := makePNG(t, 32, 32)
-	out, ok, err := tryOptimizePNG(in, Options{PNGRecompress: true, PNGStripMeta: true})
-	if err != nil {
-		t.Fatalf("tryOptimizePNG: %v", err)
-	}
-	if !ok {
-		t.Fatal("expected ok=true for valid PNG")
+	out, note := tryOptimizePNG(in, PNGOptions{Recompress: true, StripMeta: true})
+	if out == nil {
+		t.Fatalf("expected an optimized PNG (note: %q)", note)
 	}
 	// Decode both and compare pixels.
 	origImg, err := png.Decode(bytes.NewReader(in))
@@ -90,12 +87,9 @@ func TestOptimizePNGRoundtrip(t *testing.T) {
 
 func TestOptimizePNGStripsAncillary(t *testing.T) {
 	in := appendAncillaryChunk(makePNG(t, 16, 16), "tEXt", []byte("comment\x00hello world"))
-	out, ok, err := tryOptimizePNG(in, Options{PNGRecompress: true, PNGStripMeta: true})
-	if err != nil {
-		t.Fatalf("tryOptimizePNG: %v", err)
-	}
-	if !ok {
-		t.Fatal("expected ok")
+	out, note := tryOptimizePNG(in, PNGOptions{Recompress: true, StripMeta: true})
+	if out == nil {
+		t.Fatalf("expected an optimized PNG (note: %q)", note)
 	}
 	if bytes.Contains(out, []byte("tEXt")) {
 		t.Errorf("tEXt chunk not stripped from output")
@@ -104,14 +98,14 @@ func TestOptimizePNGStripsAncillary(t *testing.T) {
 
 func TestOptimizePNGKeepsAncillaryWhenDisabled(t *testing.T) {
 	in := appendAncillaryChunk(makePNG(t, 16, 16), "tEXt", []byte("comment\x00hello world"))
-	// When both PNG optimizations are disabled, the optimizer returns the
+	// When every PNG optimization is disabled, the optimizer returns the
 	// original data unchanged.
-	res, err := optimizePNG("foo.png", in, Options{PNGRecompress: false, PNGStripMeta: false})
+	res, err := optimizePNG("foo.png", in, Options{})
 	if err != nil {
 		t.Fatalf("optimizePNG: %v", err)
 	}
 	if !bytes.Equal(in, res.Data) {
-		t.Errorf("expected byte-identical passthrough when both opts disabled")
+		t.Errorf("expected byte-identical passthrough when every PNG step is disabled")
 	}
 	if res.Changed {
 		t.Errorf("expected Changed=false")
@@ -120,23 +114,15 @@ func TestOptimizePNGKeepsAncillaryWhenDisabled(t *testing.T) {
 
 func TestOptimizePNGAPNGPassthrough(t *testing.T) {
 	in := appendAncillaryChunk(makePNG(t, 16, 16), "acTL", []byte{0, 0, 0, 1, 0, 0, 0, 0})
-	_, ok, err := tryOptimizePNG(in, Options{PNGRecompress: true, PNGStripMeta: true})
-	if err != nil {
-		t.Fatalf("tryOptimizePNG: %v", err)
-	}
-	if ok {
+	if out, _ := tryOptimizePNG(in, PNGOptions{Recompress: true, StripMeta: true, Lossy: true}); out != nil {
 		t.Fatal("APNG (acTL chunk) should be passed through unchanged")
 	}
 }
 
 func TestOptimizePNGMalformed(t *testing.T) {
 	bad := []byte{0x89, 'P', 'N', 'G', 0x0d, 0x0a, 0x1a, 0x0a, 0xFF, 0xFF}
-	_, ok, err := tryOptimizePNG(bad, Options{PNGRecompress: true, PNGStripMeta: true})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if ok {
-		t.Fatal("expected ok=false for malformed PNG")
+	if out, _ := tryOptimizePNG(bad, PNGOptions{Recompress: true, StripMeta: true}); out != nil {
+		t.Fatal("expected a passthrough for a malformed PNG")
 	}
 }
 
@@ -232,16 +218,16 @@ func TestUsesAlphaChannel(t *testing.T) {
 	opaque := makePNGOpaqueRGBA(t, 8, 8)
 	cutout := makePNGCutout(t, 8, 8)
 
-	if ok, _ := usesAlphaChannel(marker); !ok {
+	if ok := usesAlphaChannel(marker); !ok {
 		t.Errorf("alpha=1 marker PNG must be flagged as using the alpha channel")
 	}
-	if ok, _ := usesAlphaChannel(grad); !ok {
+	if ok := usesAlphaChannel(grad); !ok {
 		t.Errorf("gradient PNG has mid-range alphas, must be flagged")
 	}
-	if ok, _ := usesAlphaChannel(opaque); ok {
+	if ok := usesAlphaChannel(opaque); ok {
 		t.Errorf("fully-opaque RGBA PNG must NOT be flagged (no alpha usage)")
 	}
-	if ok, _ := usesAlphaChannel(cutout); ok {
+	if ok := usesAlphaChannel(cutout); ok {
 		t.Errorf("hard-edged cutout (alpha 0/255 only) must NOT be flagged — alpha=0 carries no data")
 	}
 }
@@ -249,7 +235,7 @@ func TestUsesAlphaChannel(t *testing.T) {
 func TestQuantizePNGProtectAlpha(t *testing.T) {
 	// Any texture using its alpha channel — be it a thin marker (alpha=1)
 	// or a smooth gradient (alpha 0..255) — must skip pngquant when
-	// PNGProtectAlpha is set, returning the original bytes unchanged.
+	// ProtectAlpha is set, returning the original bytes unchanged.
 	for _, tc := range []struct {
 		name string
 		data []byte
@@ -259,20 +245,17 @@ func TestQuantizePNGProtectAlpha(t *testing.T) {
 		{"gradient", makePNGGradient(t, 8, 8)},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			out, _, ok, err := quantizePNG(tc.data, Options{
-				PNGLossyQuant:   true,
-				PNGQuantMin:     65,
-				PNGQuantMax:     90,
-				PNGProtectAlpha: true,
+			out, err := quantizePNG(tc.data, PNGOptions{
+				Lossy:        true,
+				QuantMin:     65,
+				QuantMax:     90,
+				ProtectAlpha: true,
 			})
 			if err != nil {
 				t.Fatalf("quantizePNG: %v", err)
 			}
-			if ok {
-				t.Fatalf("expected ok=false (pngquant skipped) when alpha channel is used")
-			}
-			if !bytes.Equal(out, tc.data) {
-				t.Errorf("expected byte-identical passthrough when protect_alpha fires")
+			if out != nil {
+				t.Fatalf("expected pngquant to be skipped when the alpha channel is used")
 			}
 		})
 	}
@@ -282,29 +265,20 @@ func TestQuantizePNGProtectAlpha(t *testing.T) {
 	// binary being embedded for this platform; if it's missing we tolerate
 	// ErrBinNotFound — the guard logic itself is what we're verifying.
 	opaque := makePNGOpaqueRGBA(t, 8, 8)
-	_, _, _, err := quantizePNG(opaque, Options{
-		PNGLossyQuant:   true,
-		PNGProtectAlpha: true,
-	})
+	_, err := quantizePNG(opaque, PNGOptions{Lossy: true, ProtectAlpha: true})
 	if err != nil && !errors.Is(err, ErrBinNotFound) {
 		t.Fatalf("quantizePNG opaque RGBA: unexpected err %v", err)
 	}
 	cutout := makePNGCutout(t, 8, 8)
-	_, _, _, err = quantizePNG(cutout, Options{
-		PNGLossyQuant:   true,
-		PNGProtectAlpha: true,
-	})
+	_, err = quantizePNG(cutout, PNGOptions{Lossy: true, ProtectAlpha: true})
 	if err != nil && !errors.Is(err, ErrBinNotFound) {
 		t.Fatalf("quantizePNG cutout: unexpected err %v", err)
 	}
 
-	// With PNGProtectAlpha disabled, even an alpha-using PNG is allowed
+	// With ProtectAlpha disabled, even an alpha-using PNG is allowed
 	// to proceed to pngquant (modulo binary availability).
 	marker := makePNGCorners(t, 8, 8, color.NRGBA{R: 0, G: 0, B: 0, A: 1})
-	_, _, _, err = quantizePNG(marker, Options{
-		PNGLossyQuant:   true,
-		PNGProtectAlpha: false,
-	})
+	_, err = quantizePNG(marker, PNGOptions{Lossy: true})
 	if err != nil && !errors.Is(err, ErrBinNotFound) {
 		t.Fatalf("quantizePNG protect_alpha=false: unexpected err %v", err)
 	}

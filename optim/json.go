@@ -8,7 +8,7 @@ import "archive/zip"
 // a strict JSON parser and serializing it back, but the implementation is a
 // single streaming pass without allocations beyond the output buffer.
 func optimizeJSON(path string, data []byte, opts Options) (Result, error) {
-	if !opts.JSONMinify {
+	if !opts.JSON.Minify {
 		return Result{Data: data, Method: zip.Deflate}, nil
 	}
 	out, hasComment := minifyJSON(data)

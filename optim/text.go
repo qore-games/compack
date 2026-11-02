@@ -8,7 +8,7 @@ import "archive/zip"
 // lines. String and char literals are recognized so that comment markers
 // inside them are kept verbatim.
 func optimizeShader(path string, data []byte, opts Options) (Result, error) {
-	if !opts.TextMinify {
+	if !opts.Text.Minify {
 		return Result{Data: data, Method: zip.Deflate}, nil
 	}
 	out := minifyGLSL(data)
@@ -20,7 +20,7 @@ func optimizeShader(path string, data []byte, opts Options) (Result, error) {
 // which are line based with the format key=value and # comments. We drop blank
 // lines and comment lines.
 func optimizeLang(path string, data []byte, opts Options) (Result, error) {
-	if !opts.TextMinify {
+	if !opts.Text.Minify {
 		return Result{Data: data, Method: zip.Deflate}, nil
 	}
 	out := keepKeyValueLines(data, '#')
@@ -31,7 +31,7 @@ func optimizeLang(path string, data []byte, opts Options) (Result, error) {
 // optimizeProperties handles OptiFine .properties files. Same shape as .lang
 // but accepts both '#' and '!' as comment markers.
 func optimizeProperties(path string, data []byte, opts Options) (Result, error) {
-	if !opts.TextMinify {
+	if !opts.Text.Minify {
 		return Result{Data: data, Method: zip.Deflate}, nil
 	}
 	out := keepKeyValueLines(data, '#', '!')

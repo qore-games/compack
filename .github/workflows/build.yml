@@ -43,6 +43,10 @@ jobs:
           go-version-file: go.mod
           cache: true
 
+      - name: Test
+        shell: bash
+        run: go vet ./... && go test ./...
+
       - name: Build
         run: go build -trimpath -ldflags "-s -w -X main.version=${GITHUB_REF_NAME:-dev}" -o ${{ matrix.goos == 'windows' && 'compack.exe' || 'compack' }} .
 

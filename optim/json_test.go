@@ -61,7 +61,7 @@ func TestOptimizeJSONRoundTripWithComments(t *testing.T) {
   "a": 1,
   "b": 2 /* end */
 }`)
-	res, err := optimizeJSON("foo.json", in, Options{JSONMinify: true})
+	res, err := optimizeJSON("foo.json", in, Options{JSON: JSONOptions{Minify: true}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -78,7 +78,7 @@ func TestOptimizeJSONNoWarningForJSONC(t *testing.T) {
   // player model
   "a": 1
 }`)
-	res, err := optimizeJSON("foo.jsonc", in, Options{JSONMinify: true})
+	res, err := optimizeJSON("foo.jsonc", in, Options{JSON: JSONOptions{Minify: true}})
 	if err != nil {
 		t.Fatal(err)
 	}
