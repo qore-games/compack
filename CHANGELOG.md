@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.1.2
+
+- The same input always gives the same ZIP: the largest PNG of a run no longer
+  skips its pngquant pass now and then (`pngquant failed: … text file busy`, the
+  tools being extracted while the first ones started).
+
 ## 1.1.1
 
 - Each CLI binary embeds only its own platform's tools: 19 MB → 7-8 MB. The

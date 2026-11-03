@@ -70,6 +70,16 @@ func CreateTemp(pattern string) (*os.File, error) {
 	return os.CreateTemp(dir, pattern)
 }
 
+// Extract writes every embedded tool to the scratch folder. Call it before the workers start: a tool extracted while
+// others are starting can't run (fork/exec: text file busy), as a starting process holds every open file, the one
+// being written included, until it execs (golang/go#22315). The file it was for would skip that pass in that run only.
+func Extract() {
+	for _, tool := range []string{"pngquant", "oxipng", "optivorbis", "oggshrink"} {
+		// A tool missing on this platform reports when a file needs it
+		_, _ = extractBin(tool)
+	}
+}
+
 // Cleanup stops the tools still running and removes the extracted tools and
 // scratch files. Call it once the optimizers are done (and on interrupt).
 func Cleanup() {

@@ -458,6 +458,7 @@ func optimizeAll(cfg config, files []fileSpec, rep reporter) ([]entry, error) {
 	errs := make([]error, len(files))
 	jobs := make(chan int)
 	done := make(chan int, len(files))
+	optim.Extract()
 	for w := 0; w < cfg.Threads; w++ {
 		go func() {
 			c := newCompressor()
