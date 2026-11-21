@@ -1,5 +1,20 @@
 # Changelog
 
+## 1.1.3
+
+**Added**
+
+- `png.lossless` (`-png-lossless <glob>`, repeatable): PNGs whose path matches
+  skip the lossy pngquant pass whatever their alpha, for textures whose exact
+  pixels are data a shader reads. pngquant moves colours, opaque ones and the
+  RGB under alpha 0 included, which `protect_alpha` doesn't guard against: it
+  only spares PNGs with a semi-transparent pixel.
+
+**Fixed**
+
+- `-png-protect-alpha`'s help said any non-opaque pixel; it is semi-transparent
+  ones (alpha between 0 and 255), as the docs say.
+
 ## 1.1.2
 
 - The same input always gives the same ZIP: the largest PNG of a run no longer

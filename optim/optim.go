@@ -56,6 +56,33 @@ type PNGOptions struct {
 	// alpha=0 carries no semantic data. Plain RGB images (color-type 2)
 	// carry no alpha channel at all and always go through the lossy pass.
 	ProtectAlpha bool `yaml:"protect_alpha"`
+
+	// Lossless lists the PNGs (globs on their path in the pack, `/`-separated:
+	// `*` within a name, `**` across directories) that skip the lossy pngquant
+	// pass whatever their alpha: textures whose exact pixel values are data a
+	// shader reads (markers, codes, lookup tables). pngquant moves colours,
+	// opaque ones and the RGB under alpha 0 included, which ProtectAlpha
+	// doesn't guard against. They still get the lossless oxipng pass.
+	Lossless []string `yaml:"lossless"`
+}
+
+// IsLossless tells whether path is one of Lossless's globs.
+func (o PNGOptions) IsLossless(path string) bool {
+	for _, glob := range o.Lossless {
+		if matchGlob(glob, path) {
+			return true
+		}
+	}
+	return false
+}
+
+// Variant is what, besides a file's bytes, kind and the options, decides its
+// result: a PNG listed in Lossless isn't quantised. Caches key on it too.
+func Variant(path string, opts Options) string {
+	if opts.PNG.Lossy && strings.EqualFold(extension(path), ".png") && opts.PNG.IsLossless(path) {
+		return "png-lossless"
+	}
+	return ""
 }
 
 // OGGOptions: OGG is optimized via the embedded OptiVorbis binary. OptiVorbis

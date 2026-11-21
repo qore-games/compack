@@ -39,7 +39,11 @@ var pngCRC = crc32.MakeTable(crc32.IEEE)
 // is silently skipped (the build still succeeds). On windows/arm64 none of
 // the binaries are embedded, so PNGs pass through untouched entirely.
 func optimizePNG(path string, data []byte, opts Options) (Result, error) {
-	out, note := tryOptimizePNG(data, opts.PNG)
+	pngOpts := opts.PNG
+	if pngOpts.Lossy && pngOpts.IsLossless(path) {
+		pngOpts.Lossy = false
+	}
+	out, note := tryOptimizePNG(data, pngOpts)
 	if out == nil {
 		return Result{Data: data, Method: zip.Deflate, Note: note}, nil
 	}

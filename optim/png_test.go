@@ -283,3 +283,106 @@ func TestQuantizePNGProtectAlpha(t *testing.T) {
 		t.Fatalf("quantizePNG protect_alpha=false: unexpected err %v", err)
 	}
 }
+
+func TestMatchGlob(t *testing.T) {
+	for _, tc := range []struct {
+		glob, path string
+		want       bool
+	}{
+		{"assets/*/textures/ui/**", "assets/qore/textures/ui/minelobby/panel.png", true},
+		{"assets/*/textures/ui/**", "assets/hideout/textures/ui/badge.png", true},
+		{"assets/*/textures/ui/**", "assets/qore/textures/item/ui/badge.png", false},
+		{"assets/qore/textures/item/probe*.png", "assets/qore/textures/item/probe_spot.png", true},
+		{"assets/qore/textures/item/probe*.png", "assets/qore/textures/item/probes/x.png", false},
+		{"**/cables/**", "assets/hideout/textures/item/cables/bunting.png", true},
+		{"a/**/b.png", "a/b.png", true},
+		{"a/**/b.png", "a/x/y/b.png", true},
+		{"a/?.png", "a/bc.png", false},
+		{"pack.png", "pack.png", true},
+		{"assets/x/textures/café/*.png", "assets/x/textures/café/a.png", true},
+	} {
+		if got := matchGlob(tc.glob, tc.path); got != tc.want {
+			t.Errorf("matchGlob(%q, %q) = %v, want %v", tc.glob, tc.path, got, tc.want)
+		}
+	}
+}
+
+// makePNGDataCutout is a hard-edged cutout (alpha 0 or 255 only: ProtectAlpha
+// lets it through) with more colours than a palette holds, and RGB data under
+// its transparent border, the way a shader-read texture carries codes.
+func makePNGDataCutout(t *testing.T, w, h int) []byte {
+	t.Helper()
+	img := image.NewNRGBA(image.Rect(0, 0, w, h))
+	for y := 0; y < h; y++ {
+		for x := 0; x < w; x++ {
+			a := uint8(0)
+			if x > 0 && x < w-1 && y > 0 && y < h-1 {
+				a = 255
+			}
+			// Noise (a fixed hash): thousands of colours, poorly compressed, so pngquant's palette always wins
+			h := uint32(x)*73856093 ^ uint32(y)*19349663
+			h ^= h >> 13
+			h *= 0x5bd1e995
+			h ^= h >> 15
+			img.SetNRGBA(x, y, color.NRGBA{R: uint8(h >> 24), G: uint8(h >> 16), B: uint8(h >> 8), A: a})
+		}
+	}
+	var buf bytes.Buffer
+	if err := png.Encode(&buf, img); err != nil {
+		t.Fatalf("png.Encode: %v", err)
+	}
+	return buf.Bytes()
+}
+
+// samePixels compares two PNGs' straight (not premultiplied) RGBA values, the
+// RGB under alpha 0 included.
+func samePixels(t *testing.T, a, b []byte) bool {
+	t.Helper()
+	ia, err := png.Decode(bytes.NewReader(a))
+	if err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	ib, err := png.Decode(bytes.NewReader(b))
+	if err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if !boundsEqual(ia.Bounds(), ib.Bounds()) {
+		return false
+	}
+	r := ia.Bounds()
+	for y := r.Min.Y; y < r.Max.Y; y++ {
+		for x := r.Min.X; x < r.Max.X; x++ {
+			if color.NRGBAModel.Convert(ia.At(x, y)) != color.NRGBAModel.Convert(ib.At(x, y)) {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+func TestOptimizePNGLossless(t *testing.T) {
+	in := makePNGDataCutout(t, 64, 64)
+	opts := Options{PNG: PNGOptions{
+		Recompress: true, StripMeta: true, Lossy: true, QuantMin: 0, QuantMax: 90, ProtectAlpha: true,
+		Lossless: []string{"assets/*/textures/ui/**"},
+	}}
+
+	quantised, err := optimizePNG("assets/qore/textures/item/marker.png", in, opts)
+	if err != nil {
+		t.Fatalf("optimizePNG: %v", err)
+	}
+	if !quantised.Changed || samePixels(t, in, quantised.Data) {
+		t.Skip("pngquant is not embedded for this platform, or kept this image: nothing to compare")
+	}
+
+	kept, err := optimizePNG("assets/qore/textures/ui/minelobby/panel.png", in, opts)
+	if err != nil {
+		t.Fatalf("optimizePNG: %v", err)
+	}
+	if kept.Changed && !samePixels(t, in, kept.Data) {
+		t.Fatalf("a PNG listed in Lossless must keep every pixel, the RGB under alpha 0 included")
+	}
+	if Variant("assets/qore/textures/ui/minelobby/panel.png", opts) == Variant("assets/qore/textures/item/marker.png", opts) {
+		t.Fatalf("a listed and an unlisted PNG must not share a cache entry")
+	}
+}

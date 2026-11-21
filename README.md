@@ -44,7 +44,7 @@ ZIP format: [docs/configuration.md](docs/configuration.md).
 
 | Files | |
 | --- | --- |
-| `.png` | 8-bit palette with pngquant (lossy, skipped for textures using their alpha channel), then oxipng |
+| `.png` | 8-bit palette with pngquant (lossy, skipped for textures with a semi-transparent pixel and the paths in `png.lossless`), then oxipng |
 | `.ogg` | OptiVorbis: same audio, smaller container, metadata removed. `-ogg-lossy` re-encodes first (−8% on Minebox, opt-in) |
 | `.json` `.mcmeta` | minified, comments removed |
 | `.vsh` `.fsh` `.glsl` `.lang` `.properties` | comments and blank lines removed |

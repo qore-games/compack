@@ -40,6 +40,7 @@ func (c *resultCache) optimize(spec optim.Spec, rel string, data []byte, opts op
 	h := sha256.New()
 	h.Write(c.salt)
 	h.Write([]byte(spec.Kind))
+	h.Write([]byte(optim.Variant(rel, opts)))
 	h.Write(data)
 	key := hex.EncodeToString(h.Sum(nil))
 	path := filepath.Join(c.dir, key[:2], key)

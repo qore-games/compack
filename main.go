@@ -120,6 +120,21 @@ func defaultConfig() config {
 	}
 }
 
+// globsFlag adds each use of a repeatable flag to a list (the config file's list included).
+type globsFlag []string
+
+func (g *globsFlag) String() string {
+	if g == nil {
+		return ""
+	}
+	return strings.Join(*g, ",")
+}
+
+func (g *globsFlag) Set(value string) error {
+	*g = append(*g, value)
+	return nil
+}
+
 // offFlag is a boolean flag that turns every setting it points at off: the
 // -skip-* aliases. A later flag on the command line still wins.
 type offFlag []*bool
@@ -166,7 +181,8 @@ func newFlagSet(cfg *config) *flag.FlagSet {
 	fs.BoolVar(&o.PNG.Lossy, "png-lossy", o.PNG.Lossy, "lossily remap RGB/RGBA PNGs to an 8-bit palette via embedded pngquant (libimagequant) before the lossless oxipng pass; matches PackSquash's compression level")
 	fs.IntVar(&o.PNG.QuantMin, "png-quant-min", o.PNG.QuantMin, "pngquant --quality lower bound (0-100); below this quality the original pixels are kept")
 	fs.IntVar(&o.PNG.QuantMax, "png-quant-max", o.PNG.QuantMax, "pngquant --quality upper bound (0-100); trades palette size vs quality")
-	fs.BoolVar(&o.PNG.ProtectAlpha, "png-protect-alpha", o.PNG.ProtectAlpha, "skip the lossy pngquant pass for any RGBA PNG that actually uses its alpha channel (any non-fully-opaque pixel), preserving alpha values bit-for-bit; fully-opaque RGBA and RGB PNGs still get quantised")
+	fs.BoolVar(&o.PNG.ProtectAlpha, "png-protect-alpha", o.PNG.ProtectAlpha, "skip the lossy pngquant pass for any RGBA PNG with a semi-transparent pixel (alpha between 0 and 255), preserving its alpha values bit-for-bit; cutouts (alpha 0 or 255 only), fully-opaque RGBA and RGB PNGs still get quantised, which moves their colours (list the ones whose pixels must stay exact in -png-lossless)")
+	fs.Var((*globsFlag)(&o.PNG.Lossless), "png-lossless", "a `glob` of PNGs (their path in the pack: * within a name, ** across directories) that skip the lossy pngquant pass whatever their alpha: textures whose exact pixels are data; repeatable, added to png.lossless")
 	fs.Var(offFlag{&o.PNG.Lossy}, "skip-png-quant", "do not run the lossy pngquant palette step (alias for -png-lossy=false)")
 	fs.Var(offFlag{&o.PNG.Recompress, &o.PNG.StripMeta, &o.PNG.Lossy}, "skip-png", "leave PNGs untouched (alias for -png-recompress=false -png-strip-meta=false -png-lossy=false)")
 

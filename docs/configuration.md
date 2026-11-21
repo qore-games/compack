@@ -41,6 +41,7 @@ png:
   quant_min: 65             # pngquant quality floor (0-100): below it, keep the original pixels
   quant_max: 90             # pngquant quality target (0-100)
   protect_alpha: true       # no pngquant for RGBA PNGs with alpha between 0 and 255
+  lossless: []              # globs of PNGs never quantised, e.g. [assets/*/textures/ui/**]
 
 ogg:
   optimize: true            # OptiVorbis, lossless
@@ -75,6 +76,7 @@ text:
 | `-png-quant-min <n>` | `png.quant_min` | 65 |
 | `-png-quant-max <n>` | `png.quant_max` | 90 |
 | `-png-protect-alpha` | `png.protect_alpha` | on |
+| `-png-lossless <glob>` | `png.lossless` | none (repeatable, added to the config's) |
 | `-ogg` | `ogg.optimize` | on |
 | `-ogg-strip-comments` | `ogg.strip_comments` | on |
 | `-ogg-lossy` | `ogg.lossy` | off |
@@ -98,7 +100,7 @@ A later flag wins over a shortcut: `-skip-png -png-lossy` only runs pngquant.
 
 | Files | Optimization |
 | --- | --- |
-| `.png` | pngquant palette (lossy, skipped for alpha-carrying RGBA), then oxipng (lossless). APNGs are left alone. The smallest of the original and the results is kept. |
+| `.png` | pngquant palette (lossy, skipped for RGBA with a semi-transparent pixel and for the paths in `png.lossless`), then oxipng (lossless). APNGs are left alone. The smallest of the original and the results is kept. |
 | `.ogg` `.oga` | with `-ogg-lossy`, a re-encode first (below); then OptiVorbis: same samples, smaller container, no comments, fixed stream serials |
 | `.json` `.jsonc` `.mcmeta` `.mcmetac` | whitespace and `//` `/* */` comments removed (a note when a strict `.json` had comments) |
 | `.vsh` `.fsh` `.glsl` | comments removed, whitespace collapsed, blank lines dropped |
@@ -108,6 +110,24 @@ A later flag wins over a shortcut: `-skip-png -png-lossy` only runs pngquant.
 Each entry is then deflated, or stored when deflating would not make it smaller.
 Hidden folders (`.git`, `.idea`…) of a folder input are skipped, and so is the
 output file when it is inside the input folder.
+
+## png.lossless
+
+pngquant keeps alpha 0 and 255 but moves colours: the opaque ones, and the RGB
+under alpha 0. A texture whose exact pixels are data a shader reads (markers,
+codes, lookup tables) loses it, and `protect_alpha` only spares PNGs with a
+semi-transparent pixel. List those textures, by path in the pack:
+
+```yaml
+png:
+  lossless:
+    - assets/*/textures/ui/**            # `*` within a name
+    - assets/qore/textures/item/probe*.png
+    - "**/cables/**"                     # `**` across directories
+```
+
+They still get oxipng's lossless pass. A semi-transparent pixel (alpha 1 in a
+corner) in the texture itself does the same through `protect_alpha`.
 
 ## -ogg-lossy
 
